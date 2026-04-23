@@ -7,13 +7,13 @@
 	objects = {
 
 /* Begin PBXFileReference section */
-		402FA3F82F99EB130050FCBF /* Afterglow.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Afterglow.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		402FA3F82F99EB130050FCBF /* OutAgain.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OutAgain.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		402FA3FA2F99EB130050FCBF /* Afterglow */ = {
+		402FA3FA2F99EB130050FCBF /* OutAgain */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = Afterglow;
+			path = OutAgain;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -32,7 +32,7 @@
 		402FA3EF2F99EB130050FCBF = {
 			isa = PBXGroup;
 			children = (
-				402FA3FA2F99EB130050FCBF /* Afterglow */,
+				402FA3FA2F99EB130050FCBF /* OutAgain */,
 				402FA3F92F99EB130050FCBF /* Products */,
 			);
 			sourceTree = "<group>";
@@ -40,7 +40,7 @@
 		402FA3F92F99EB130050FCBF /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				402FA3F82F99EB130050FCBF /* Afterglow.app */,
+				402FA3F82F99EB130050FCBF /* OutAgain.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -48,9 +48,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		402FA3F72F99EB130050FCBF /* Afterglow */ = {
+		402FA3F72F99EB130050FCBF /* OutAgain */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 402FA4032F99EB140050FCBF /* Build configuration list for PBXNativeTarget "Afterglow" */;
+			buildConfigurationList = 402FA4032F99EB140050FCBF /* Build configuration list for PBXNativeTarget "OutAgain" */;
 			buildPhases = (
 				402FA3F42F99EB130050FCBF /* Sources */,
 				402FA3F52F99EB130050FCBF /* Frameworks */,
@@ -61,13 +61,13 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				402FA3FA2F99EB130050FCBF /* Afterglow */,
+				402FA3FA2F99EB130050FCBF /* OutAgain */,
 			);
-			name = Afterglow;
+			name = OutAgain;
 			packageProductDependencies = (
 			);
-			productName = Afterglow;
-			productReference = 402FA3F82F99EB130050FCBF /* Afterglow.app */;
+			productName = OutAgain;
+			productReference = 402FA3F82F99EB130050FCBF /* OutAgain.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -85,7 +85,7 @@
 					};
 				};
 			};
-			buildConfigurationList = 402FA3F32F99EB130050FCBF /* Build configuration list for PBXProject "Afterglow" */;
+			buildConfigurationList = 402FA3F32F99EB130050FCBF /* Build configuration list for PBXProject "OutAgain" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -99,7 +99,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				402FA3F72F99EB130050FCBF /* Afterglow */,
+				402FA3F72F99EB130050FCBF /* OutAgain */,
 			);
 		};
 /* End PBXProject section */
@@ -251,8 +251,14 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 4JLZS37N8V;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Out Again";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Out Again opens the camera first so you can capture the moment in seconds.";
+				INFOPLIST_KEY_NSContactsUsageDescription = "Out Again matches contacts so you can find real friends fast and keep the network high-signal.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Out Again uses location to suggest nearby venues and meaningful same-place moments.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Out Again lets you choose a profile photo and review captured moments.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -263,7 +269,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.cristian.Afterglow;
+				PRODUCT_BUNDLE_IDENTIFIER = com.cristian.OutAgain;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -282,8 +288,14 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 4JLZS37N8V;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Out Again";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Out Again opens the camera first so you can capture the moment in seconds.";
+				INFOPLIST_KEY_NSContactsUsageDescription = "Out Again matches contacts so you can find real friends fast and keep the network high-signal.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Out Again uses location to suggest nearby venues and meaningful same-place moments.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Out Again lets you choose a profile photo and review captured moments.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -294,7 +306,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.cristian.Afterglow;
+				PRODUCT_BUNDLE_IDENTIFIER = com.cristian.OutAgain;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -309,7 +321,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		402FA3F32F99EB130050FCBF /* Build configuration list for PBXProject "Afterglow" */ = {
+		402FA3F32F99EB130050FCBF /* Build configuration list for PBXProject "OutAgain" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				402FA4012F99EB140050FCBF /* Debug */,
@@ -318,7 +330,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		402FA4032F99EB140050FCBF /* Build configuration list for PBXNativeTarget "Afterglow" */ = {
+		402FA4032F99EB140050FCBF /* Build configuration list for PBXNativeTarget "OutAgain" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				402FA4042F99EB140050FCBF /* Debug */,
