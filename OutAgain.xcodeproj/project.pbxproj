@@ -6,8 +6,37 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		A10000042F99EB130050FCBF /* OutAgainWidgetExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = A10000012F99EB130050FCBF /* OutAgainWidgetExtension.appex */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		A10000062F99EB130050FCBF /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 402FA3F02F99EB130050FCBF /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A10000082F99EB130050FCBF;
+			remoteInfo = OutAgainWidgetExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		A10000052F99EB130050FCBF /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				A10000042F99EB130050FCBF /* OutAgainWidgetExtension.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		402FA3F82F99EB130050FCBF /* OutAgain.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OutAgain.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A10000012F99EB130050FCBF /* OutAgainWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = OutAgainWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -16,10 +45,27 @@
 			path = OutAgain;
 			sourceTree = "<group>";
 		};
+		A10000022F99EB130050FCBF /* OutAgainShared */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = OutAgainShared;
+			sourceTree = "<group>";
+		};
+		A10000032F99EB130050FCBF /* OutAgainWidgetExtension */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = OutAgainWidgetExtension;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		402FA3F52F99EB130050FCBF /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A10000092F99EB130050FCBF /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -33,6 +79,8 @@
 			isa = PBXGroup;
 			children = (
 				402FA3FA2F99EB130050FCBF /* OutAgain */,
+				A10000022F99EB130050FCBF /* OutAgainShared */,
+				A10000032F99EB130050FCBF /* OutAgainWidgetExtension */,
 				402FA3F92F99EB130050FCBF /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,6 +89,7 @@
 			isa = PBXGroup;
 			children = (
 				402FA3F82F99EB130050FCBF /* OutAgain.app */,
+				A10000012F99EB130050FCBF /* OutAgainWidgetExtension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -55,13 +104,16 @@
 				402FA3F42F99EB130050FCBF /* Sources */,
 				402FA3F52F99EB130050FCBF /* Frameworks */,
 				402FA3F62F99EB130050FCBF /* Resources */,
+				A10000052F99EB130050FCBF /* Embed App Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				A10000072F99EB130050FCBF /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				402FA3FA2F99EB130050FCBF /* OutAgain */,
+				A10000022F99EB130050FCBF /* OutAgainShared */,
 			);
 			name = OutAgain;
 			packageProductDependencies = (
@@ -69,6 +121,29 @@
 			productName = OutAgain;
 			productReference = 402FA3F82F99EB130050FCBF /* OutAgain.app */;
 			productType = "com.apple.product-type.application";
+		};
+		A10000082F99EB130050FCBF /* OutAgainWidgetExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A100000E2F99EB130050FCBF /* Build configuration list for PBXNativeTarget "OutAgainWidgetExtension" */;
+			buildPhases = (
+				A100000B2F99EB130050FCBF /* Sources */,
+				A10000092F99EB130050FCBF /* Frameworks */,
+				A100000A2F99EB130050FCBF /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				A10000022F99EB130050FCBF /* OutAgainShared */,
+				A10000032F99EB130050FCBF /* OutAgainWidgetExtension */,
+			);
+			name = OutAgainWidgetExtension;
+			packageProductDependencies = (
+			);
+			productName = OutAgainWidgetExtension;
+			productReference = A10000012F99EB130050FCBF /* OutAgainWidgetExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -81,6 +156,9 @@
 				LastUpgradeCheck = 2640;
 				TargetAttributes = {
 					402FA3F72F99EB130050FCBF = {
+						CreatedOnToolsVersion = 26.4;
+					};
+					A10000082F99EB130050FCBF = {
 						CreatedOnToolsVersion = 26.4;
 					};
 				};
@@ -100,12 +178,20 @@
 			projectRoot = "";
 			targets = (
 				402FA3F72F99EB130050FCBF /* OutAgain */,
+				A10000082F99EB130050FCBF /* OutAgainWidgetExtension */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		402FA3F62F99EB130050FCBF /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A100000A2F99EB130050FCBF /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -122,7 +208,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A100000B2F99EB130050FCBF /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A10000072F99EB130050FCBF /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A10000082F99EB130050FCBF /* OutAgainWidgetExtension */;
+			targetProxy = A10000062F99EB130050FCBF /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		402FA4012F99EB140050FCBF /* Debug */ = {
@@ -158,6 +259,7 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_ENTITLEMENTS = OutAgain/OutAgain.Debug.entitlements;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -249,21 +351,35 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = OutAgain/OutAgain.Debug.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 4JLZS37N8V;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Out Again";
+				INFOPLIST_KEY_CFBundleURLTypes_0_CFBundleTypeRole = Editor;
+				INFOPLIST_KEY_CFBundleURLTypes_0_CFBundleURLName = com.cristian.OutAgain;
+				INFOPLIST_KEY_CFBundleURLTypes_0_CFBundleURLSchemes_0 = outagain;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Out Again opens the camera first so you can capture the moment in seconds.";
 				INFOPLIST_KEY_NSContactsUsageDescription = "Out Again matches contacts so you can find real friends fast and keep the network high-signal.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Out Again uses location to suggest nearby venues and meaningful same-place moments.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Out Again uses location to tag your moments.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Out Again lets you save photos from posts directly to your camera roll.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Out Again lets you choose a profile photo and review captured moments.";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
+				INFOPLIST_KEY_OUTAGAIN_INVITE_BASE_URL = "https://outagain.app/invite";
+				INFOPLIST_KEY_SUPABASE_AVATAR_BUCKET = avatars;
+				INFOPLIST_KEY_SUPABASE_PUBLISHABLE_KEY = "sb_publishable_Pkns19omXhRZBw1A-2_9-A_t1wZ9Zd_";
+				INFOPLIST_KEY_SUPABASE_STORAGE_BUCKET = moments;
+				INFOPLIST_KEY_SUPABASE_URL = "https://xissvzlusznqpxvwnwpu.supabase.co";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
+				INFOPLIST_KEY_UIStatusBarHidden = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -286,21 +402,35 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = OutAgain/OutAgain.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 4JLZS37N8V;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Out Again";
+				INFOPLIST_KEY_CFBundleURLTypes_0_CFBundleTypeRole = Editor;
+				INFOPLIST_KEY_CFBundleURLTypes_0_CFBundleURLName = com.cristian.OutAgain;
+				INFOPLIST_KEY_CFBundleURLTypes_0_CFBundleURLSchemes_0 = outagain;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Out Again opens the camera first so you can capture the moment in seconds.";
 				INFOPLIST_KEY_NSContactsUsageDescription = "Out Again matches contacts so you can find real friends fast and keep the network high-signal.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Out Again uses location to suggest nearby venues and meaningful same-place moments.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Out Again uses location to tag your moments.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Out Again lets you save photos from posts directly to your camera roll.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Out Again lets you choose a profile photo and review captured moments.";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
+				INFOPLIST_KEY_OUTAGAIN_INVITE_BASE_URL = "https://outagain.app/invite";
+				INFOPLIST_KEY_SUPABASE_AVATAR_BUCKET = avatars;
+				INFOPLIST_KEY_SUPABASE_PUBLISHABLE_KEY = "sb_publishable_Pkns19omXhRZBw1A-2_9-A_t1wZ9Zd_";
+				INFOPLIST_KEY_SUPABASE_STORAGE_BUCKET = moments;
+				INFOPLIST_KEY_SUPABASE_URL = "https://xissvzlusznqpxvwnwpu.supabase.co";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
+				INFOPLIST_KEY_UIStatusBarHidden = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -313,6 +443,50 @@
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		A100000C2F99EB130050FCBF /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = "";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 4JLZS37N8V;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = OutAgainWidgetExtensionInfo.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.cristian.OutAgain.OutAgainWidgetExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		A100000D2F99EB130050FCBF /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = "";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 4JLZS37N8V;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = OutAgainWidgetExtensionInfo.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.cristian.OutAgain.OutAgainWidgetExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -335,6 +509,15 @@
 			buildConfigurations = (
 				402FA4042F99EB140050FCBF /* Debug */,
 				402FA4052F99EB140050FCBF /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A100000E2F99EB130050FCBF /* Build configuration list for PBXNativeTarget "OutAgainWidgetExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A100000C2F99EB130050FCBF /* Debug */,
+				A100000D2F99EB130050FCBF /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

@@ -1,33 +1,106 @@
-import AuthenticationServices
 import Foundation
 import Observation
 
 @MainActor
 @Observable
 final class AppStore {
+    static let pendingDeletedNotificationIDsKey = "OutAgain.pendingDeletedNotificationIDs"
+
     var authState: AuthState = .signedOut
     var onboardingStep: OnboardingStep = .welcome
+    var authDraft = EmailPasswordAuthDraft()
     var onboardingDraft = OnboardingDraft()
+
     var selectedTab: AppTab = .home
+    /// Incremented every time the Home tab is tapped so the feed can
+    /// react even when Home is already the selected tab.
+    var homeTabSelectionTrigger = 0
+    var friendsPageMode: FriendsPageMode = .discover
+    // When non-nil, the Friends tab auto-presents this profile on appear.
+    var friendsTabPendingProfile: UserProfile? = nil
     var feedScope: FeedScope = .friends
     var selectedPresenceClusterID: UUID?
-    var isNotificationsPresented = false
     var isPostFlowPresented = false
+    var isMaddoxPlayerPresented = false
+    /// Set to true when the user posts a Maddox drink. AppRootView watches
+    /// isPostFlowPresented and presents the player once the cover is gone.
+    var pendingMaddoxPlayer = false
+    var isTabBarMinimized = false
+
     var postDraft = PostDraft()
     var viewer: UserProfile?
+    var usernameAvailability: UsernameAvailability = .unchecked
+    var profileEditor = ProfileEditorDraft()
+    var profileUsernameAvailability: UsernameAvailability = .unchecked
+    var notificationPreferences = AppStore.loadNotificationPreferences() {
+        didSet {
+            persistNotificationPreferences()
+        }
+    }
+    var liveActivityPreferences = AppStore.loadLiveActivityPreferences() {
+        didSet {
+            persistLiveActivityPreferences()
+        }
+    }
+    var accentColorChoice: AccentColorChoice = AppStore.loadAccentColorChoice() {
+        didSet {
+            UserDefaults.standard.set(accentColorChoice.rawValue, forKey: "OutAgain.accentColor")
+        }
+    }
+    var isSavingProfile = false
+    var profileEditorMessage: String?
+    var friendSearchQuery = ""
+    var friendSearchResults: [UserProfile] = []
+    var contactMatches: [UserProfile] = []
+    var isSearchingContactMatches = false
+    var outboundNotificationDeliveries: [OutboundNotificationDelivery] = []
+    var socialErrorMessage: String?
+    var isLiveActivityPromptPresented = false
+    var pendingLiveActivityPromptPost: MomentPost?
 
-    var friends = SampleData.friends
-    var suggestedFriends = SampleData.suggestedFriends
-    var drinks = SampleData.drinks
-    var venues = SampleData.venues
-    var posts = SampleData.posts.sorted { $0.createdAt > $1.createdAt }
-    var presenceSignals = SampleData.presenceSignals.sorted { $0.createdAt > $1.createdAt }
-    var notifications = SampleData.notifications.sorted { $0.createdAt > $1.createdAt }
+    /// Night groups: sourced from the backend `night_groups` table and synced
+    /// on every bootstrap. All members of a group see it via RLS policy.
+    var nightGroups: [NightGroup] = []
+    /// Controls presentation of the group creation sheet from HomeFeedView.
+    var isGroupCreationPresented = false
+    /// The group whose feed is currently being viewed (nil = none open).
+    var activeGroupID: UUID? = nil
 
-    @ObservationIgnored private let backend: SocialBackendClient
+    var friends: [UserProfile] = []
+    var suggestedFriends: [UserProfile] = []
+    var friendOfFriendIDsStore: Set<UUID> = []
+    var incomingFriendRequests: [FriendRequest] = []
+    var outgoingFriendRequests: [FriendRequest] = []
+    var blockedUserIDs: Set<UUID> = []
+    var blockedUsers: [UserProfile] = []
+    var drinkCatalogPreferences = DrinkCatalogPreferences()
+    var drinks = SeedCatalog.drinks
+    var venues = SeedCatalog.venues
+    var posts: [MomentPost] = []
+    var notifications: [AppNotification] = []
 
-    init(backend: SocialBackendClient? = nil) {
-        self.backend = backend ?? MockSocialBackendClient(environment: .placeholder)
+    // Distinguishes "still loading" from "finished loading, user is signed out."
+    // Without this, the root view renders the onboarding UI for the brief window
+    // between process start and the first bootstrap returning, which looks like a
+    // flash of the login screen on every cold launch.
+    var bootstrapPhase: BootstrapPhase = .pending
+
+    @ObservationIgnored let backend: SocialBackendClient
+    @ObservationIgnored var didAttemptBootstrap = false
+    @ObservationIgnored var pendingAPNsToken: Data?
+    @ObservationIgnored var lastRegisteredAPNsToken: Data?
+    @ObservationIgnored var friendSearchDebounceTask: Task<Void, Never>?
+    @ObservationIgnored var foregroundPollTask: Task<Void, Never>?
+    @ObservationIgnored var lastFullRefreshAt: Date?
+    /// URL string → (width / height) aspect ratio, populated the first time
+    /// each remote photo loads. Survives refreshAppData and view recreation
+    /// so placeholders stay correctly sized across the app's lifetime.
+    @ObservationIgnored var photoAspectRatioCache: [String: CGFloat] = [:]
+    @ObservationIgnored var pendingDeletedNotificationIDs = AppStore.loadPendingDeletedNotificationIDs()
+    @ObservationIgnored var lastSyncedDrinkCatalogPreferences = DrinkCatalogPreferences()
+
+    init(backend: SocialBackendClient) {
+        self.backend = backend
         resetDraft()
     }
 
@@ -43,6 +116,14 @@ final class AppStore {
         notifications.filter { !$0.isRead }.count
     }
 
+    func isNotificationPendingDeletion(_ id: UUID) -> Bool {
+        pendingDeletedNotificationIDs.contains(id)
+    }
+
+    var pendingIncomingRequestCount: Int {
+        incomingFriendRequests.count
+    }
+
     var favoriteDrinks: [DrinkTag] {
         Array(drinks.prefix(3))
     }
@@ -52,23 +133,171 @@ final class AppStore {
     }
 
     var viewerIdentity: UserProfile {
-        viewer ?? SampleData.seedViewer
+        viewer ?? .placeholderCurrentUser
+    }
+
+    var normalizedOnboardingUsername: String {
+        onboardingDraft.username
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+    }
+
+    var normalizedOnboardingEmail: String? {
+        EmailAddressRules.normalized(authDraft.email)
+    }
+
+    var authPassword: String {
+        authDraft.password
+    }
+
+    var canSubmitAuth: Bool {
+        guard !authDraft.isSubmitting else { return false }
+
+        // Debug-only: when local shortcut credentials are configured outside
+        // the repo, `1`/`1` should remain tappable even though it is neither
+        // a valid email nor a valid password.
+        if DeveloperTestAccount.resolve(
+            email: authDraft.email,
+            password: authDraft.password
+        ) != nil {
+            return true
+        }
+
+        guard normalizedOnboardingEmail != nil else { return false }
+
+        switch authDraft.mode {
+        case .signUp:
+            return PasswordRules.isValid(authPassword)
+        case .signIn:
+            return !authPassword.isEmpty
+        }
+    }
+
+    var isSignInMode: Bool {
+        authDraft.mode == .signIn
+    }
+
+    var canContinueFromProfile: Bool {
+        guard !onboardingDraft.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return false
+        }
+
+        if case .available(let username, _) = usernameAvailability {
+            return username == normalizedOnboardingUsername
+        }
+
+        return false
+    }
+
+    var normalizedProfileEditorUsername: String {
+        profileEditor.username
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+    }
+
+    var canSaveProfileEdits: Bool {
+        guard !isSavingProfile else { return false }
+        guard !profileEditor.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return false
+        }
+
+        if case .available(let username, _) = profileUsernameAvailability {
+            return username == normalizedProfileEditorUsername
+        }
+
+        return false
     }
 
     var viewerPosts: [MomentPost] {
         guard let viewer else { return [] }
-        return posts.filter { $0.author.id == viewer.id }
+        return sortPostsByRecency(
+            posts.filter { $0.author.id == viewer.id }
+        )
+    }
+
+    func handleHomeTabTap() {
+        selectedTab = .home
+        homeTabSelectionTrigger &+= 1
+    }
+
+    /// Start of the current "night window": 7 AM today, or 7 AM yesterday
+    /// if it's currently before 7 AM (i.e. still last night).
+    private var currentNightWindowStart: Date {
+        let cal = Calendar.current
+        let now = Date()
+        let sevenAMToday = cal.date(
+            bySettingHour: 7, minute: 0, second: 0, of: now
+        ) ?? now
+        return now >= sevenAMToday
+            ? sevenAMToday
+            : cal.date(byAdding: .day, value: -1, to: sevenAMToday) ?? sevenAMToday
+    }
+
+    /// Drink tally for the current night window (7 AM → 7 AM cycle).
+    /// Most-recently-posted drink type appears first. Multiple posts of
+    /// the same drink accumulate into a single pill with a count.
+    var viewerDrinkCounts: [(drink: DrinkTag, count: Int)] {
+        guard let viewer else { return [] }
+        return nightlyDrinkCounts(for: viewer.id)
+    }
+
+    /// Drink tally for any author within the current night window.
+    /// Same accumulation logic as `viewerDrinkCounts` but parameterised
+    /// by author so friend post cards can show the same nightly summary.
+    func nightlyDrinkCounts(for authorID: UUID) -> [(drink: DrinkTag, count: Int)] {
+        nightlyDrinkCounts(for: authorID, through: nil)
+    }
+
+    /// Drink tally for an author within the current night window, optionally
+    /// capped at a specific post so older cards reflect the order as of that
+    /// moment rather than the author's latest total for the night.
+    func nightlyDrinkCounts(for authorID: UUID, through postID: UUID?) -> [(drink: DrinkTag, count: Int)] {
+        let windowStart = currentNightWindowStart
+        let authorPosts = sortPostsByRecency(
+            posts.filter { $0.author.id == authorID }
+        )
+        let tonightPosts = authorPosts.filter { post in
+            guard post.createdAt >= windowStart else { return false }
+            guard let postID else { return true }
+            guard let cutoffIndex = authorPosts.firstIndex(where: { $0.id == postID }),
+                  let postIndex = authorPosts.firstIndex(where: { $0.id == post.id })
+            else { return false }
+            return postIndex >= cutoffIndex
+        }
+        // Newest-first so the first occurrence of a drink name maps to
+        // the most-recently-posted instance — that pill appears first.
+        var seen: [String: (drink: DrinkTag, count: Int)] = [:]
+        var order: [String] = []
+        for post in tonightPosts {
+            let key = post.drink.name
+            if seen[key] == nil {
+                seen[key] = (post.drink, 0)
+                order.append(key)
+            }
+            seen[key]!.count += 1
+        }
+        return order.compactMap { seen[$0] }
+    }
+
+    var presenceSignals: [PresenceSignal] {
+        Self.makePresenceSignals(from: posts, excluding: viewer?.id)
     }
 
     var activeVenueActivities: [VenueActivity] {
-        let grouped = Dictionary(grouping: posts.compactMap { post -> (UUID, MomentPost)? in
-            guard let venue = post.venue else { return nil }
-            return (venue.id, post)
-        }, by: \.0)
+        let grouped = Dictionary(
+            grouping: posts.compactMap { post -> (UUID, MomentPost)? in
+                guard let venue = post.venue else { return nil }
+                return (venue.id, post)
+            },
+            by: \.0
+        )
 
-        return grouped.compactMap { venueID, items in
-            guard let venue = venues.first(where: { $0.id == venueID }) else { return nil }
-            return VenueActivity(venue: venue, posts: items.map(\.1).sorted { $0.createdAt > $1.createdAt })
+        return grouped.compactMap { _, items in
+            guard let venue = items.first?.1.venue else { return nil }
+            return VenueActivity(
+                venue: venue,
+                posts: items.map(\.1).sorted { $0.createdAt > $1.createdAt }
+            )
         }
         .sorted { lhs, rhs in
             (lhs.posts.first?.createdAt ?? .distantPast) > (rhs.posts.first?.createdAt ?? .distantPast)
@@ -79,15 +308,19 @@ final class AppStore {
         posts.filter { $0.createdAt > .now.addingTimeInterval(-4 * 60 * 60) }
     }
 
-    private var directFriendIDs: Set<UUID> {
-        Set(friends.map(\.id)).union([viewerIdentity.id])
+    var directFriendIDs: Set<UUID> {
+        var ids = Set(friends.map(\.id))
+        if let viewer {
+            ids.insert(viewer.id)
+        }
+        return ids
     }
 
-    private var friendOfFriendIDs: Set<UUID> {
-        Set(suggestedFriends.map(\.id))
+    var friendOfFriendIDs: Set<UUID> {
+        friendOfFriendIDsStore
     }
 
-    private var scopedPresenceSignals: [PresenceSignal] {
+    var scopedPresenceSignals: [PresenceSignal] {
         switch feedScope {
         case .friends:
             presenceSignals.filter { directFriendIDs.contains($0.user.id) }
@@ -96,20 +329,24 @@ final class AppStore {
         }
     }
 
-    private var scopedPosts: [MomentPost] {
+    var scopedPosts: [MomentPost] {
         switch feedScope {
         case .friends:
-            posts.filter { directFriendIDs.contains($0.author.id) }
+            sortPostsByRecency(
+                posts.filter { directFriendIDs.contains($0.author.id) }
+            )
         case .friendsOfFriends:
-            posts.filter { isFriendsOfFriendsPost($0) }
+            sortPostsByRecency(
+                posts.filter { isFriendsOfFriendsPost($0) }
+            )
         }
     }
 
-    private var scopedLivePosts: [MomentPost] {
+    var scopedLivePosts: [MomentPost] {
         scopedPosts.filter { $0.createdAt > .now.addingTimeInterval(-4 * 60 * 60) }
     }
 
-    private var allPresenceClusters: [PresenceCluster] {
+    var allPresenceClusters: [PresenceCluster] {
         let grouped = Dictionary(grouping: livePosts) { post in
             post.venue?.id ?? post.id
         }
@@ -119,7 +356,7 @@ final class AppStore {
 
             var seen = Set<UUID>()
             let friends = posts
-                .flatMap { [ $0.author ] + $0.taggedFriends }
+                .flatMap { [$0.author] + $0.taggedFriends }
                 .filter { friend in
                     guard friend.id != viewer?.id else { return false }
                     return seen.insert(friend.id).inserted
@@ -155,20 +392,12 @@ final class AppStore {
     }
 
     var homeFeedPosts: [MomentPost] {
-        let basePosts = scopedLivePosts.isEmpty ? scopedPosts : scopedLivePosts
-
-        if let cluster = selectedPresenceCluster {
-            let clusterPosts = basePosts.filter { cluster.relatedPostIDs.contains($0.id) }
-            if !clusterPosts.isEmpty {
-                return clusterPosts + basePosts.filter { !cluster.relatedPostIDs.contains($0.id) }
-            }
-        }
-
-        if basePosts.isEmpty {
-            return Array(scopedPosts.prefix(3))
-        }
-
-        return basePosts
+        // The feed is continuous and never resets — show all posts the
+        // viewer is allowed to see, newest first. scopedLivePosts (4-hour
+        // window) is intentionally NOT used here; that filter only makes
+        // sense for presence clusters ("who's out right now"), not the
+        // scrollable feed which should persist across days.
+        sortPostsByRecency(scopedPosts)
     }
 
     var hasLiveSignal: Bool {
@@ -195,8 +424,15 @@ final class AppStore {
         homeFeedPosts.first?.media.primaryHex ?? "#D98B3D"
     }
 
+    /// The primary (first-selected) drink for this draft.
     var selectedDrinkForDraft: DrinkTag? {
-        drinks.first(where: { $0.id == postDraft.selectedDrinkID })
+        guard let primaryID = postDraft.selectedDrinkIDs.first else { return nil }
+        return drinks.first(where: { $0.id == primaryID })
+    }
+
+    /// All selected drinks in selection order.
+    var selectedDrinksForDraft: [DrinkTag] {
+        postDraft.selectedDrinkIDs.compactMap { id in drinks.first(where: { $0.id == id }) }
     }
 
     var selectedVenueForDraft: Venue? {
@@ -208,295 +444,23 @@ final class AppStore {
     }
 
     var canPublishDraft: Bool {
-        selectedDrinkForDraft != nil && (postDraft.capturedPhotoData != nil || postDraft.isUsingSampleCapture)
+        postDraft.capturedPhotoData != nil || postDraft.isUsingSampleCapture
     }
 
     var weeklyRecap: WeeklyRecap {
         let posts = viewerPosts
-        let momentsPosted = posts.count
         let favoriteDrink = mostFrequentDrink(in: posts) ?? drinks[0]
-        let commonVenue = mostFrequentVenue(in: posts)
         let totalInteractions = posts.reduce(0) { partialResult, post in
-            partialResult + post.reactions.reduce(0) { $0 + $1.count } + post.comments.count
+            partialResult + post.reactions.reduce(0) { $0 + $1.count } + post.commentCount
         }
         let nightsActive = Set(posts.map { Calendar.current.startOfDay(for: $0.createdAt) }).count
 
         return WeeklyRecap(
-            momentsPosted: momentsPosted,
+            momentsPosted: posts.count,
             favoriteDrink: favoriteDrink,
-            commonVenue: commonVenue,
+            commonVenue: mostFrequentVenue(in: posts),
             nightsActive: nightsActive,
             totalInteractions: totalInteractions
         )
-    }
-
-    func selectFeedScope(_ scope: FeedScope) {
-        feedScope = scope
-
-        if !presenceClusters.contains(where: { $0.id == selectedPresenceClusterID }) {
-            selectedPresenceClusterID = presenceClusters.first?.id
-        }
-    }
-
-    func selectPresenceCluster(_ cluster: PresenceCluster?) {
-        selectedPresenceClusterID = cluster?.id
-    }
-
-    func handleAppleSignIn(_ result: Result<ASAuthorization, Error>) {
-        // The UI prototype advances after the Apple handoff; token exchange belongs in the Supabase adapter.
-        if case .failure = result {
-            authState = .signedIn
-            onboardingStep = .profile
-            return
-        }
-
-        authState = .signedIn
-        onboardingStep = .profile
-    }
-
-    func continueFromProfile() {
-        guard !onboardingDraft.username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-
-        if onboardingDraft.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            onboardingDraft.displayName = onboardingDraft.username
-        }
-
-        if onboardingDraft.inviteLink.isEmpty {
-            onboardingDraft.inviteLink = backend.createInviteLink(for: onboardingDraft.username).absoluteString
-        }
-
-        onboardingStep = .permissions
-    }
-
-    func continueFromPermissions() {
-        onboardingStep = .invite
-    }
-
-    func enterApp() {
-        let username = onboardingDraft.username.lowercased()
-        viewer = UserProfile(
-            id: SampleData.seedViewer.id,
-            displayName: onboardingDraft.displayName,
-            username: username,
-            avatar: AvatarStyle(
-                symbol: "moon.stars.fill",
-                primaryHex: "#D98B3D",
-                secondaryHex: "#281916",
-                imageData: onboardingDraft.profileImageData
-            ),
-            isCloseFriend: true
-        )
-
-        onboardingStep = .done
-        selectedTab = .home
-        feedScope = .friends
-        selectedPresenceClusterID = presenceClusters.first?.id
-    }
-
-    func openNotifications() {
-        notifications = notifications.map {
-            var copy = $0
-            copy.isRead = true
-            return copy
-        }
-        isNotificationsPresented = true
-    }
-
-    func openPostFlow() {
-        resetDraft()
-        isPostFlowPresented = true
-    }
-
-    func closePostFlow() {
-        isPostFlowPresented = false
-        resetDraft()
-    }
-
-    func applyCapturedPhoto(_ data: Data?, lensMode: CameraCaptureMode) {
-        postDraft.capturedPhotoData = data
-        postDraft.lensMode = lensMode
-        postDraft.isUsingSampleCapture = false
-    }
-
-    func useSampleCapture() {
-        postDraft.capturedPhotoData = nil
-        postDraft.sampleSymbol = "sparkles.tv"
-        postDraft.isUsingSampleCapture = true
-    }
-
-    func selectDrink(_ drink: DrinkTag) {
-        postDraft.selectedDrinkID = drink.id
-    }
-
-    func selectVenue(_ venue: Venue) {
-        postDraft.selectedVenueID = venue.id
-    }
-
-    func toggleTaggedFriend(_ friend: UserProfile) {
-        if postDraft.taggedFriendIDs.contains(friend.id) {
-            postDraft.taggedFriendIDs.remove(friend.id)
-        } else {
-            postDraft.taggedFriendIDs.insert(friend.id)
-        }
-    }
-
-    func publishDraft() {
-        guard let viewer, let drink = selectedDrinkForDraft, canPublishDraft else { return }
-
-        let venue = selectedVenueForDraft
-        let taggedFriends = taggedFriendsForDraft
-        let trimmedCaption = postDraft.caption.trimmingCharacters(in: .whitespacesAndNewlines)
-        let companionSummary = taggedFriends.isEmpty
-            ? nil
-            : "With \(taggedFriends.first?.displayName ?? "friends")\(taggedFriends.count > 1 ? " +\(taggedFriends.count - 1)" : "")"
-
-        let newPost = MomentPost(
-            id: UUID(),
-            author: viewer,
-            drink: drink,
-            venue: venue,
-            caption: trimmedCaption.isEmpty ? "Pulled into the night fast." : trimmedCaption,
-            createdAt: .now,
-            taggedFriends: taggedFriends,
-            isSharedMoment: postDraft.isSharedMoment,
-            media: MomentMedia(
-                photoData: postDraft.capturedPhotoData,
-                primaryHex: drink.primaryHex,
-                secondaryHex: drink.secondaryHex,
-                symbol: postDraft.sampleSymbol
-            ),
-            reactions: [ReactionSummary(kind: .cheers, count: 1)],
-            comments: [],
-            presenceNote: taggedFriends.isEmpty ? nil : "\(taggedFriends.first?.displayName ?? "Friends") is in the moment",
-            connectionPath: nil,
-            contextReason: companionSummary ?? (venue == nil ? "Live right now" : "Just checked in")
-        )
-
-        posts.insert(newPost, at: 0)
-        notifications.insert(
-            AppNotification(
-                id: UUID(),
-                kind: .sharedMoment,
-                title: "Moment posted",
-                detail: venue.map { "You just checked in at \($0.name)." } ?? "Your camera-first post is live.",
-                createdAt: .now,
-                isRead: false
-            ),
-            at: 0
-        )
-
-        selectedTab = .home
-        feedScope = .friends
-        selectedPresenceClusterID = presenceClusters.first?.id
-        isPostFlowPresented = false
-        resetDraft()
-    }
-
-    func addReaction(_ kind: ReactionKind, to post: MomentPost) {
-        guard let index = posts.firstIndex(where: { $0.id == post.id }) else { return }
-
-        if let reactionIndex = posts[index].reactions.firstIndex(where: { $0.kind == kind }) {
-            posts[index].reactions[reactionIndex].count += 1
-        } else {
-            posts[index].reactions.append(ReactionSummary(kind: kind, count: 1))
-        }
-    }
-
-    func addComment(
-        _ text: String,
-        kind: CommentKind = .text,
-        toPostID postID: UUID,
-        replyingTo replyTarget: Comment? = nil
-    ) {
-        guard let index = posts.firstIndex(where: { $0.id == postID }) else { return }
-
-        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let fallbackText: String = switch kind {
-        case .text:
-            ""
-        case .photo:
-            "Photo reply"
-        case .gif:
-            "GIF reply"
-        }
-
-        guard kind != .text || !trimmedText.isEmpty else { return }
-
-        posts[index].comments.insert(
-            Comment(
-                id: UUID(),
-                author: viewerIdentity,
-                text: trimmedText.isEmpty ? fallbackText : trimmedText,
-                createdAt: .now,
-                kind: kind,
-                replyToCommentID: replyTarget?.id,
-                replyToDisplayName: replyTarget?.author.displayName
-            ),
-            at: 0
-        )
-    }
-
-    func toggleCommentLike(commentID: UUID, inPostID postID: UUID) {
-        guard let postIndex = posts.firstIndex(where: { $0.id == postID }),
-              let commentIndex = posts[postIndex].comments.firstIndex(where: { $0.id == commentID })
-        else { return }
-
-        posts[postIndex].comments[commentIndex].isLikedByViewer.toggle()
-        if posts[postIndex].comments[commentIndex].isLikedByViewer {
-            posts[postIndex].comments[commentIndex].likeCount += 1
-        } else {
-            posts[postIndex].comments[commentIndex].likeCount = max(posts[postIndex].comments[commentIndex].likeCount - 1, 0)
-        }
-    }
-
-    private func resetDraft() {
-        postDraft = PostDraft(
-            capturedPhotoData: nil,
-            selectedDrinkID: drinks.first?.id,
-            selectedVenueID: nil,
-            caption: "",
-            taggedFriendIDs: [],
-            isSharedMoment: false,
-            sampleSymbol: "camera.aperture",
-            lensMode: .single,
-            isUsingSampleCapture: false
-        )
-    }
-
-    private func mostFrequentDrink(in posts: [MomentPost]) -> DrinkTag? {
-        let counts = Dictionary(grouping: posts, by: \.drink.id)
-            .mapValues(\.count)
-        guard let bestID = counts.max(by: { $0.value < $1.value })?.key else { return nil }
-        return drinks.first(where: { $0.id == bestID })
-    }
-
-    private func mostFrequentVenue(in posts: [MomentPost]) -> Venue? {
-        let counts = Dictionary(grouping: posts.compactMap(\.venue), by: \.id)
-            .mapValues(\.count)
-        guard let bestID = counts.max(by: { $0.value < $1.value })?.key else { return nil }
-        return venues.first(where: { $0.id == bestID })
-    }
-
-    private func uniqueUsers(from posts: [MomentPost]) -> [UserProfile] {
-        var seen = Set<UUID>()
-
-        return posts
-            .flatMap { [$0.author] + $0.taggedFriends }
-            .filter { user in
-                guard user.id != viewer?.id else { return false }
-                return seen.insert(user.id).inserted
-            }
-    }
-
-    private func isFriendsOfFriendsPost(_ post: MomentPost) -> Bool {
-        if friendOfFriendIDs.contains(post.author.id) {
-            return true
-        }
-
-        if post.connectionPath != nil {
-            return true
-        }
-
-        return post.taggedFriends.contains { friendOfFriendIDs.contains($0.id) }
     }
 }

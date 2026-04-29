@@ -17,7 +17,7 @@ final class CameraPipeline: NSObject, AVCapturePhotoCaptureDelegate {
     var setupState: SetupState = .idle
     var capturedPhotoData: Data?
     var isCapturing = false
-    var lensMode: CameraCaptureMode = .single
+    var lensMode: CameraCaptureMode = .back
 
     @ObservationIgnored let session = AVCaptureSession()
     @ObservationIgnored private let photoOutput = AVCapturePhotoOutput()
@@ -25,7 +25,16 @@ final class CameraPipeline: NSObject, AVCapturePhotoCaptureDelegate {
     @ObservationIgnored private var isConfigured = false
 
     var dualCaptureSupported: Bool {
-        AVCaptureMultiCamSession.isMultiCamSupported
+        canSwitchLens
+    }
+
+    var canSwitchLens: Bool {
+        Self.exactDevice(for: .back) != nil && Self.exactDevice(for: .front) != nil
+    }
+
+    /// True when the device has a built-in ultrawide rear camera.
+    var hasUltraWide: Bool {
+        Self.ultraWideDevice() != nil
     }
 
     func prepare() async {
@@ -56,7 +65,6 @@ final class CameraPipeline: NSObject, AVCapturePhotoCaptureDelegate {
 
         do {
             try await configureSession()
-            lensMode = dualCaptureSupported ? .dualReady : .single
             setupState = .ready
             await startSessionIfNeeded()
         } catch {
@@ -81,12 +89,43 @@ final class CameraPipeline: NSObject, AVCapturePhotoCaptureDelegate {
         }
     }
 
+    func switchLens() async {
+        guard setupState == .ready, canSwitchLens else { return }
+
+        let targetLens = lensMode.toggled
+        do {
+            try await configureCameraInput(for: targetLens)
+            lensMode = targetLens
+            await startSessionIfNeeded()
+        } catch {
+            setupState = .failed(error.localizedDescription)
+        }
+    }
+
+    func switchTo(_ lens: CameraCaptureMode) async {
+        guard setupState == .ready else { return }
+        guard lensMode != lens else { return }
+        do {
+            try await configureCameraInput(for: lens)
+            lensMode = lens
+            await startSessionIfNeeded()
+        } catch {
+            setupState = .failed(error.localizedDescription)
+        }
+    }
+
     func capturePhoto() {
         guard setupState == .ready else { return }
 
         isCapturing = true
         let settings = AVCapturePhotoSettings()
         settings.photoQualityPrioritization = .quality
+
+        if let connection = photoOutput.connection(with: .video), connection.isVideoMirroringSupported {
+            connection.automaticallyAdjustsVideoMirroring = false
+            connection.isVideoMirrored = lensMode == .front
+        }
+
         photoOutput.capturePhoto(with: settings, delegate: self)
     }
 
@@ -115,6 +154,7 @@ final class CameraPipeline: NSObject, AVCapturePhotoCaptureDelegate {
         guard !isConfigured else { return }
         let session = session
         let photoOutput = photoOutput
+        let initialLens = lensMode
 
         try await withCheckedThrowingContinuation { continuation in
             sessionQueue.async {
@@ -122,33 +162,12 @@ final class CameraPipeline: NSObject, AVCapturePhotoCaptureDelegate {
                     session.beginConfiguration()
                     session.sessionPreset = .photo
 
-                    if let existingInput = session.inputs.first {
-                        session.removeInput(existingInput)
-                    }
-
-                    let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)
-                        ?? AVCaptureDevice.default(for: .video)
-
-                    guard let device else {
-                        throw NSError(domain: "OutAgainCamera", code: 404, userInfo: [
-                            NSLocalizedDescriptionKey: "No camera hardware was found."
-                        ])
-                    }
-
-                    let input = try AVCaptureDeviceInput(device: device)
-                    guard session.canAddInput(input) else {
-                        throw NSError(domain: "OutAgainCamera", code: 405, userInfo: [
-                            NSLocalizedDescriptionKey: "The back camera could not be attached."
-                        ])
-                    }
+                    try Self.replaceVideoInput(on: session, with: initialLens)
 
                     guard session.canAddOutput(photoOutput) else {
-                        throw NSError(domain: "OutAgainCamera", code: 406, userInfo: [
-                            NSLocalizedDescriptionKey: "Photo capture is unavailable on this device."
-                        ])
+                        throw CameraError.photoOutputUnavailable
                     }
 
-                    session.addInput(input)
                     session.addOutput(photoOutput)
                     photoOutput.maxPhotoQualityPrioritization = .quality
                     session.commitConfiguration()
@@ -162,20 +181,117 @@ final class CameraPipeline: NSObject, AVCapturePhotoCaptureDelegate {
 
         isConfigured = true
     }
+
+    private func configureCameraInput(for lens: CameraCaptureMode) async throws {
+        let session = session
+
+        try await withCheckedThrowingContinuation { continuation in
+            sessionQueue.async {
+                do {
+                    session.beginConfiguration()
+                    try Self.replaceVideoInput(on: session, with: lens)
+                    session.commitConfiguration()
+                    continuation.resume()
+                } catch {
+                    session.commitConfiguration()
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    nonisolated private static func replaceVideoInput(on session: AVCaptureSession, with lens: CameraCaptureMode) throws {
+        let previousInputs = session.inputs
+            .compactMap { $0 as? AVCaptureDeviceInput }
+            .filter { $0.device.hasMediaType(.video) }
+
+        previousInputs.forEach(session.removeInput)
+
+        guard let device = device(for: lens) ?? device(for: .back) ?? device(for: .front) else {
+            previousInputs.forEach { input in
+                if session.canAddInput(input) { session.addInput(input) }
+            }
+            throw CameraError.noCameraHardware
+        }
+
+        let input = try AVCaptureDeviceInput(device: device)
+        guard session.canAddInput(input) else {
+            previousInputs.forEach { previousInput in
+                if session.canAddInput(previousInput) { session.addInput(previousInput) }
+            }
+            throw CameraError.inputUnavailable(lens.rawValue)
+        }
+
+        session.addInput(input)
+    }
+
+    nonisolated private static func exactDevice(for lens: CameraCaptureMode) -> AVCaptureDevice? {
+        switch lens {
+        case .ultraWide:
+            return ultraWideDevice()
+        default:
+            return AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: avPosition(for: lens))
+                ?? AVCaptureDevice.default(.builtInDualCamera, for: .video, position: avPosition(for: lens))
+        }
+    }
+
+    nonisolated static func ultraWideDevice() -> AVCaptureDevice? {
+        AVCaptureDevice.default(.builtInUltraWideCamera, for: .video, position: .back)
+    }
+
+    nonisolated private static func device(for lens: CameraCaptureMode) -> AVCaptureDevice? {
+        exactDevice(for: lens)
+            ?? exactDevice(for: .back)
+            ?? exactDevice(for: .front)
+            ?? AVCaptureDevice.default(for: .video)
+    }
+
+    nonisolated private static func avPosition(for lens: CameraCaptureMode) -> AVCaptureDevice.Position {
+        switch lens {
+        case .back, .ultraWide: .back
+        case .front: .front
+        }
+    }
+
+    private enum CameraError: LocalizedError {
+        case noCameraHardware
+        case inputUnavailable(String)
+        case photoOutputUnavailable
+
+        var errorDescription: String? {
+            switch self {
+            case .noCameraHardware:
+                "No camera hardware was found."
+            case .inputUnavailable(let lens):
+                "The \(lens.lowercased()) could not be attached."
+            case .photoOutputUnavailable:
+                "Photo capture is unavailable on this device."
+            }
+        }
+    }
 }
 
 struct CameraPreviewView: UIViewRepresentable {
     let session: AVCaptureSession
+    let isMirrored: Bool
 
     func makeUIView(context: Context) -> PreviewContainerView {
         let view = PreviewContainerView()
         view.previewLayer.session = session
         view.previewLayer.videoGravity = .resizeAspectFill
+        configureMirroring(on: view.previewLayer)
         return view
     }
 
     func updateUIView(_ uiView: PreviewContainerView, context: Context) {
         uiView.previewLayer.session = session
+        configureMirroring(on: uiView.previewLayer)
+    }
+
+    private func configureMirroring(on layer: AVCaptureVideoPreviewLayer) {
+        guard let connection = layer.connection, connection.isVideoMirroringSupported else { return }
+        connection.automaticallyAdjustsVideoMirroring = false
+        connection.isVideoMirrored = isMirrored
     }
 }
 

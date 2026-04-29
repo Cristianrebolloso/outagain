@@ -8,6 +8,6 @@ struct ContentView: View {
 
 #Preview {
     ContentView()
-        .environment(AppStore())
+        .environment(AppStore(backend: UnconfiguredBackend(environment: .placeholder)))
         .environment(PermissionCenter())
 }
