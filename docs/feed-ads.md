@@ -68,7 +68,7 @@ On November 7, the Release simulator build and feed placement/configuration chec
 
 ## November 8 switch validation
 
-The public-Xcode 27.2 archive is version 2.2 build 6. Placement tests cover positions 7/14/21, pagination, deletion, incomplete pages, malformed config, and Release rejection of sample/test IDs. A transaction-scoped database check verified admin on/off, rejection of anonymous/member RPC calls and direct writes, and rejection of updates to unrelated config. The transaction was rolled back; the deployed switch remains `false`.
+The public-Xcode 27.2 replacement archive is version 2.2 build 7. Placement tests cover positions 7/14/21, pagination, deletion, incomplete pages, malformed config, and Release rejection of sample/test IDs. A transaction-scoped database check verified admin on/off, rejection of anonymous/member RPC calls and direct writes, and rejection of updates to unrelated config. The transaction was rolled back; the deployed switch remains `false`.
 
 Migration `20261108070015_admin_feed_ads_switch.sql` narrows public config reads to app-safe keys. It excludes legacy server-only config values without changing server-side access. The new RPC is SECURITY INVOKER, with column-level UPDATE permission plus an admin-only RLS policy limited to this one key.
 
@@ -77,3 +77,11 @@ Migration `20261108070015_admin_feed_ads_switch.sql` narrows public config reads
 The required SDK AdChoices control uses the supported bottom-right placement in an inset footer, away from the header, creative, and CTA. The NativeAdView remains inside the glass card with 16-point outer padding. Media height now follows the SDK aspect ratio without the old 360-point cap; portrait, square, and landscape images/video retain their full content without app-added side gutters. Missing aspect metadata falls back to image dimensions, then 3:2. SDK video controls, click registration, and impression measurement are unchanged. The source artwork may itself contain borders that the app cannot remove without cropping the advertisement.
 
 Geometry checks cover six media ratios at four feed widths, the reported portrait regression, and invalid/missing metadata.
+
+### Delivery confirmed November 8, 2026
+
+Build 7 was uploaded and submitted at 1:50 AM America/Chicago. App Store Connect confirms **2.2 (7), Waiting for Review**, submission `65e9b9b7-71cf-45a8-aa1c-963708eef87e`. It supersedes the canceled build 6 submission. The submitted build includes the new white-glasses app icon. App Store Connect still shows the old live icon in the app-level heading until release.
+
+The development-signed Release build 7 installed successfully on Cristian’s connected iPhone Duo (bundle `com.cristian.OutAgain`). The device disconnected again before launch/readback or visual inspection, so installation success is not runtime visual QA. Archive and device builds, geometry checks, and diff validation passed. GitHub implementation commit: `865613c`.
+
+The remote `feed_ads_enabled` setting was read back as **true** during this pass; it was left unchanged. Reviewer notes disclose that ads are currently enabled, the admin switch behavior, fallback cards, SDK privacy settings, and the build 7 layout changes.
