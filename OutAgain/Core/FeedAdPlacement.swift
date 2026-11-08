@@ -23,6 +23,23 @@ struct FeedAdRequestState: Equatable {
     let enabled: Bool
 }
 
+enum FeedAdMediaLayout {
+    static func aspectRatio(reported: CGFloat, imageSize: CGSize?) -> CGFloat {
+        if reported.isFinite, reported > 0 { return reported }
+        if let imageSize, imageSize.width.isFinite, imageSize.height.isFinite,
+           imageSize.width > 0, imageSize.height > 0 {
+            return imageSize.width / imageSize.height
+        }
+        return 1.5
+    }
+
+    static func height(width: CGFloat, aspectRatio: CGFloat) -> CGFloat {
+        // Preserve the full creative. A fixed height cap introduces gutters
+        // for portrait media; aspect-fill instead would cut off ad copy.
+        width / self.aspectRatio(reported: aspectRatio, imageSize: nil)
+    }
+}
+
 struct FeedAdConfiguration {
     static func isEnabled(in config: [String: String]) -> Bool {
         config["feed_ads_enabled"] == "true"

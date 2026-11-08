@@ -12,6 +12,9 @@ struct FeedNativeAdCard: View {
             Group {
                 if let ad = slot.ad {
                     FeedNativeAdContent(ad: ad)
+                        // Inset the entire SDK view so its AdChoices corner is
+                        // inside the glass card, including on rounded edges.
+                        .padding(16)
                         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
                             if height > 0 { slot.measuredHeight = height }
                         }
@@ -87,7 +90,7 @@ private struct FeedNativeAdContent: UIViewRepresentable {
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: FeedNativeAdUIView,
                      context: Context) -> CGSize? {
         guard let width = proposal.width, width > 0 else { return nil }
-        uiView.mediaHeight.constant = min(360, max(160, (width - 32) / uiView.mediaAspectRatio))
+        uiView.mediaHeight.constant = FeedAdMediaLayout.height(width: width, aspectRatio: uiView.mediaAspectRatio)
         return uiView.systemLayoutSizeFitting(
             CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
             withHorizontalFittingPriority: .required,
@@ -139,12 +142,9 @@ private final class FeedNativeAdUIView: NativeAdView {
         header.axis = .horizontal
         header.alignment = .center
         header.spacing = 12
-        // Keep a clear area under the SDK's top-right AdChoices control.
-        header.isLayoutMarginsRelativeArrangement = true
-        header.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 32)
 
         creative.contentMode = .scaleAspectFit
-        creative.backgroundColor = .black.withAlphaComponent(0.18)
+        creative.backgroundColor = .clear
         creative.layer.cornerRadius = 16
         creative.clipsToBounds = true
         mediaHeight.isActive = true
@@ -163,16 +163,33 @@ private final class FeedNativeAdUIView: NativeAdView {
         // Required by the SDK: it handles the click through NativeAdView.
         actionButton.isUserInteractionEnabled = false
 
-        let stack = UIStackView(arrangedSubviews: [header, creative, headline, bodyLabel, actionButton])
+        // The SDK places its required control in the bottom-right corner.
+        // Reserve a separate footer so it cannot overlap the CTA or media.
+        let footer = UIView()
+        let disclosure = UILabel()
+        configure(disclosure, size: 12, weight: "Medium", style: .caption1)
+        disclosure.text = "Advertisement"
+        disclosure.textColor = .white.withAlphaComponent(0.65)
+        disclosure.translatesAutoresizingMaskIntoConstraints = false
+        footer.addSubview(disclosure)
+        NSLayoutConstraint.activate([
+            footer.heightAnchor.constraint(greaterThanOrEqualToConstant: 24),
+            disclosure.leadingAnchor.constraint(equalTo: footer.leadingAnchor),
+            disclosure.trailingAnchor.constraint(lessThanOrEqualTo: footer.trailingAnchor, constant: -40),
+            disclosure.topAnchor.constraint(equalTo: footer.topAnchor),
+            disclosure.bottomAnchor.constraint(equalTo: footer.bottomAnchor)
+        ])
+
+        let stack = UIStackView(arrangedSubviews: [header, creative, headline, bodyLabel, actionButton, footer])
         stack.axis = .vertical
         stack.spacing = 12
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
-            stack.topAnchor.constraint(equalTo: topAnchor, constant: 16),
-            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -16)
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stack.topAnchor.constraint(equalTo: topAnchor),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
 
         advertiserView = advertiser
@@ -195,7 +212,10 @@ private final class FeedNativeAdUIView: NativeAdView {
         icon.image = ad.icon?.image
         icon.isHidden = ad.icon == nil
         creative.mediaContent = ad.mediaContent
-        mediaAspectRatio = ad.mediaContent.aspectRatio > 0 ? ad.mediaContent.aspectRatio : 1.5
+        mediaAspectRatio = FeedAdMediaLayout.aspectRatio(
+            reported: ad.mediaContent.aspectRatio,
+            imageSize: ad.mediaContent.mainImage?.size ?? ad.images?.first?.image?.size
+        )
         actionButton.setTitle(ad.callToAction, for: .normal)
         actionButton.isHidden = ad.callToAction == nil
         // Associate last, after every displayed asset is registered/populated.

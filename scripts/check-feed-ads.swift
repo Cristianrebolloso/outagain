@@ -3,6 +3,18 @@ import Foundation
 @main
 struct FeedAdChecks {
     static func main() {
+        for width: CGFloat in [240, 320, 390, 600] {
+            for ratio: CGFloat in [9.0 / 16.0, 4.0 / 5.0, 1, 4.0 / 3.0, 16.0 / 9.0, 2.4] {
+                let height = FeedAdMediaLayout.height(width: width, aspectRatio: ratio)
+                precondition(abs(width / height - ratio) < 0.0001, "Media frame must fit without gutters or cropping")
+            }
+        }
+        precondition(FeedAdMediaLayout.height(width: 360, aspectRatio: 9.0 / 16.0) == 640,
+                     "Portrait ads must not be capped at the old square height")
+        for invalid: CGFloat in [0, -1, .nan, .infinity] {
+            precondition(FeedAdMediaLayout.aspectRatio(reported: invalid, imageSize: CGSize(width: 900, height: 1600)) == 9.0 / 16.0)
+            precondition(FeedAdMediaLayout.aspectRatio(reported: invalid, imageSize: CGSize(width: 0, height: 0)) == 1.5)
+        }
         precondition(!FeedAdConfiguration.isEnabled(in: [:]))
         for value in ["false", "", "TRUE", "1", "invalid"] {
             precondition(!FeedAdConfiguration.isEnabled(in: ["feed_ads_enabled": value]))

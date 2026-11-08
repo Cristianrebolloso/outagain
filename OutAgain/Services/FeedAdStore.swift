@@ -203,7 +203,7 @@ private final class FeedNativeAdRequest: NSObject, NativeAdLoaderDelegate {
     init(unitID: String, completion: @escaping (Result<NativeAd, Error>) -> Void) {
         self.completion = completion
         let options = NativeAdViewAdOptions()
-        options.preferredAdChoicesPosition = .topRightCorner
+        options.preferredAdChoicesPosition = .bottomRightCorner
         loader = AdLoader(adUnitID: unitID, rootViewController: nil,
                           adTypes: [.native], options: [options])
         super.init()
