@@ -624,6 +624,7 @@ protocol SocialBackendClient {
 
     // Admin
     func setVerified(_ isVerified: Bool, for profile: UserProfile) async throws
+    func setFeedAdsEnabled(_ enabled: Bool) async throws -> [String: String]
     func setMaintenanceMode(enabled: Bool, title: String, message: String) async throws -> [String: String]
     func publishAppAnnouncement(
         requestID: UUID,

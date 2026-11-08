@@ -238,7 +238,7 @@ final class PermissionCenter: NSObject, CLLocationManagerDelegate {
         }
     }
 
-    private func refreshNotificationStatus() async {
+    func refreshNotificationStatus() async {
         let settings = await notificationCenter.notificationSettings()
         notificationsStatus = PermissionCenter.mapNotificationStatus(settings.authorizationStatus)
     }

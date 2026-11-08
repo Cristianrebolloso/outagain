@@ -71,6 +71,7 @@ struct AppSecondaryPageNavigation: ViewModifier {
     @Environment(AppStore.self) private var store
     @Environment(\.isAppSheet) private var isAppSheet
     let title: String
+    var isScrolled = false
 
     @ViewBuilder
     func body(content: Content) -> some View {
@@ -79,7 +80,7 @@ struct AppSecondaryPageNavigation: ViewModifier {
                 .navigationTitle("")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbarBackground(.hidden, for: .navigationBar)
-                .modifier(DuoPageHeader(title: title))
+                .modifier(DuoPageHeader(title: title, isScrolled: isScrolled))
         } else {
             content
                 .navigationTitle(title)

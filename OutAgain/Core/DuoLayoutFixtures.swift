@@ -13,6 +13,24 @@ enum DuoLayoutFixtures {
     }
 
     static func makeStore() -> AppStore {
+        if ProcessInfo.processInfo.arguments.contains("--feed-ad-switch-checks") {
+            Task {
+                let ads = FeedAdStore()
+                let ids = (0..<20).map { _ in UUID() }
+                await ads.prepare(postIDs: ids, isLayoutPreview: true, enabled: false)
+                precondition(ads.slots.isEmpty)
+                await ads.prepare(postIDs: ids, isLayoutPreview: true, enabled: true)
+                precondition(ads.slots.count == 3)
+                precondition(ads.slots.values.allSatisfy { $0.ad == nil })
+                await ads.prepare(postIDs: ids, isLayoutPreview: true, enabled: false)
+                precondition(ads.slots.isEmpty)
+                await ads.prepare(postIDs: ids, isLayoutPreview: true, enabled: true)
+                precondition(ads.slots.count == 3)
+                ads.clearFeed()
+                precondition(ads.slots.isEmpty)
+                FileHandle.standardError.write(Data("PASS: feed ad switch off/on/off/on, house fallback slots, session clearing\n".utf8))
+            }
+        }
         if ProcessInfo.processInfo.arguments.contains("--backend-reliability-checks") {
             Task { await BackendReliabilityChecks.run() }
         }
@@ -52,6 +70,10 @@ enum DuoLayoutFixtures {
         store.onboardingStep = .done
         store.bootstrapPhase = .ready
         store.didAttemptBootstrap = true
+        if ProcessInfo.processInfo.arguments.contains("--feed-ads-preview") ||
+            ProcessInfo.processInfo.arguments.contains("--house-ads-preview") {
+            store.appConfig["feed_ads_enabled"] = "true"
+        }
         if ProcessInfo.processInfo.arguments.contains("--maintenance-preview") {
             store.appConfig["maintenance_mode_enabled"] = "true"
         }
@@ -79,7 +101,7 @@ enum DuoLayoutFixtures {
         let colors = ["#632A85", "#234F78", "#823E56"]
         let checksContinuity = ProcessInfo.processInfo.arguments.contains("--duo-continuity")
         let hasEmptyTonight = ProcessInfo.processInfo.arguments.contains("--duo-empty-tonight")
-        let postCount = ProcessInfo.processInfo.arguments.contains("--feed-ads-preview") ? 30
+        let postCount = (ProcessInfo.processInfo.arguments.contains("--feed-ads-preview") || ProcessInfo.processInfo.arguments.contains("--house-ads-preview")) ? 30
             : ProcessInfo.processInfo.arguments.contains("--duo-profile") ? 18 : 6
         store.posts = (0..<postCount).map { index in
             let friend = friends[index % friends.count]

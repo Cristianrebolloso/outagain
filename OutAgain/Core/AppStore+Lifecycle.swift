@@ -356,8 +356,7 @@ extension AppStore {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 10 * NSEC_PER_SEC)
                 guard !Task.isCancelled else { return }
-                guard self?.authState == .signedIn,
-                      self?.isViewerAdmin == false
+                guard self?.authState == .signedIn
                 else { continue }
                 await self?.refreshAppConfigOnly()
             }

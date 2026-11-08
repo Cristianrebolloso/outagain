@@ -35,18 +35,19 @@ final class FeedAdStore {
     @ObservationIgnored private var consentUpdateFailed = false
     @ObservationIgnored private var lastConsentAttempt = Date.distantPast
 
-    func prepare(postIDs: [UUID], isLayoutPreview: Bool) async {
-        // Existing offline layout checks must stay offline. This opt-in preview
-        // exercises Google's real test-ad delivery with the local sample feed.
+    func prepare(postIDs: [UUID], isLayoutPreview: Bool, enabled: Bool) async {
+        guard enabled else { clearFeed(); return }
+        // The remote switch controls both test and production placements.
+        // Offline previews can render house promos without contacting Google.
         feedEnabled = configuration.unitID != nil && (!isLayoutPreview ||
             ProcessInfo.processInfo.arguments.contains("--feed-ads-preview"))
-        guard feedEnabled else { return }
         let eligible = Set(FeedAdPlacement.anchors(in: postIDs))
         slots = slots.filter { eligible.contains($0.key) }
         loaders = loaders.filter { eligible.contains($0.key) }
         for id in eligible where slots[id] == nil { slots[id] = FeedAdSlot(id: id) }
+        guard feedEnabled else { return }
         await prepareSDK()
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, feedEnabled else { return }
         request(lastRequestedAnchor.flatMap { eligible.contains($0) ? $0 : nil }
             ?? FeedAdPlacement.anchors(in: postIDs).first)
     }
@@ -75,6 +76,10 @@ final class FeedAdStore {
     }
 
     func clearFeed() {
+        preparation?.cancel()
+        preparation = nil
+        canRequestAds = false
+        consentUpdateFailed = false
         loaders.removeAll()
         slots.removeAll()
         lastRequestedAnchor = nil
@@ -112,6 +117,7 @@ final class FeedAdStore {
     private func gatherConsentAndStart() async {
         do {
             try await ConsentInformation.shared.requestConsentInfoUpdate(with: RequestParameters())
+            guard feedEnabled, !Task.isCancelled else { return }
             try await ConsentForm.loadAndPresentIfRequired(from: nil)
         } catch {
             consentUpdateFailed = true
@@ -121,6 +127,7 @@ final class FeedAdStore {
             print("[FeedAds] Consent: \(error.localizedDescription)")
             #endif
         }
+        guard feedEnabled, !Task.isCancelled else { return }
         await startIfAllowed()
     }
 
@@ -130,7 +137,7 @@ final class FeedAdStore {
         if !canRequestAds {
             for slot in slots.values { slot.ad = nil; slot.measuredHeight = 0 }
         }
-        guard canRequestAds, !sdkReady else { return }
+        guard feedEnabled, !Task.isCancelled, canRequestAds, !sdkReady else { return }
         // This integration does not request ATT or access an advertising ID.
         // Also disable Google's publisher first-party identifier.
         MobileAds.shared.requestConfiguration.setPublisherFirstPartyIDEnabled(false)
@@ -155,7 +162,7 @@ final class FeedAdStore {
         if let failed = slot.failedAt, Date().timeIntervalSince(failed) < 60 { return }
         slot.lastUsed = .now
         let loader = FeedNativeAdRequest(unitID: unitID) { [weak self, weak slot] result in
-            guard let self, let slot, self.slots[id] === slot else { return }
+            guard let self, self.feedEnabled, let slot, self.slots[id] === slot else { return }
             self.loaders[id] = nil
             switch result {
             case .success(let ad):

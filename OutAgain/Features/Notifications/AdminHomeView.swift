@@ -32,6 +32,15 @@ struct AdminHomeView: View {
                             }
 
                             adminToolLink(
+                                title: "Feed Ads",
+                                subtitle: store.areFeedAdsEnabled ? "On · live ads with promo fallback" : "Off · all ad cards hidden",
+                                symbol: "rectangle.stack.badge.play",
+                                tint: accent
+                            ) {
+                                AdminFeedAdsView()
+                            }
+
+                            adminToolLink(
                                 title: "Notifications",
                                 subtitle: notificationsSubtitle,
                                 symbol: "bell.badge.fill",
@@ -60,7 +69,7 @@ struct AdminHomeView: View {
             }
         } companion: {
             DuoCompanionPlaceholder(
-                title: "Admin tools", subtitle: "Manage reports, maintenance and notifications.",
+                title: "Admin tools", subtitle: "Manage reports, ads, maintenance and notifications.",
                 symbol: "shield.lefthalf.filled")
         }
     }
@@ -152,5 +161,61 @@ struct AdminHomeView: View {
         if forceReports || store.adminReports.isEmpty {
             store.loadAdminReportsNextPage(reset: true)
         }
+    }
+}
+
+private struct AdminFeedAdsView: View {
+    @Environment(AppStore.self) private var store
+    @Environment(\.appAccent) private var accent
+    @State private var isSaving = false
+    @State private var errorMessage: String?
+    @State private var isTitleScrolled = false
+
+    var body: some View {
+        ScrollView {
+            if store.isViewerAdmin {
+                NightPanel(cornerRadius: AppLayout.panelRadius, padding: 20) {
+                    VStack(alignment: .leading, spacing: 18) {
+                        Toggle("Show feed ads", isOn: Binding(
+                            get: { store.areFeedAdsEnabled },
+                            set: { enabled in
+                                guard !isSaving else { return }
+                                isSaving = true
+                                Task {
+                                    defer { isSaving = false }
+                                    do { try await store.saveFeedAdsEnabled(enabled) }
+                                    catch { errorMessage = error.localizedDescription }
+                                }
+                            }
+                        ))
+                        .font(AppTypography.rowTitle)
+                        .tint(accent)
+                        .disabled(isSaving)
+                        .accessibilityIdentifier("admin.feedAds.enabled")
+
+                        Text(store.areFeedAdsEnabled
+                             ? "On: live ads appear when available. Otherwise, an Out Again promo fills the spot."
+                             : "Off: all sponsored and promo cards are hidden.")
+                            .font(AppTypography.body)
+                        Text("Applies to everyone using this update. Cards appear at positions 7, 14, 21, and so on. Changes reach open apps on their next settings refresh, usually within 10 seconds.")
+                            .font(AppTypography.rowSubtitle)
+                            .foregroundStyle(AppTheme.softText)
+                        if isSaving { ProgressView("Saving…") }
+                    }
+                    .foregroundStyle(.white)
+                }
+                .padding(.horizontal, AppLayout.screenPadding)
+                .padding(.top, AppLayout.secondaryPageTopPadding)
+            }
+        }
+        .onScrollGeometryChange(for: Bool.self) { $0.contentOffset.y + $0.contentInsets.top > 8 }
+        action: { _, value in isTitleScrolled = value }
+        .modifier(MainPageSurface())
+        .appSecondaryPageNavigation(title: "Feed Ads", isScrolled: isTitleScrolled)
+        .task { await store.refreshAppConfigOnly() }
+        .alert("Couldn’t save ad setting", isPresented: Binding(
+            get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } }
+        )) { Button("OK", role: .cancel) { errorMessage = nil } }
+        message: { Text(errorMessage ?? "") }
     }
 }

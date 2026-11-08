@@ -138,6 +138,7 @@ struct UnconfiguredBackend: SocialBackendClient {
     func fetchNightGroups(createdAfter windowStart: Date) async throws -> [NightGroup] { throw error }
     func sendSelfTestNotification() async throws { throw error }
     func setVerified(_ isVerified: Bool, for profile: UserProfile) async throws { throw error }
+    func setFeedAdsEnabled(_ enabled: Bool) async throws -> [String: String] { throw error }
     func setMaintenanceMode(enabled: Bool, title: String, message: String) async throws -> [String: String] { throw error }
     func publishAppAnnouncement(
         requestID: UUID,

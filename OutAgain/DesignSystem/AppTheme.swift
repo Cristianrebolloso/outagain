@@ -1432,8 +1432,8 @@ private struct SecondaryGlassModifier: ViewModifier {
 extension View {
     /// Pushed Duo pages share their title treatment with the main panes.
     /// Regular iPhones retain their native inline navigation title.
-    func appSecondaryPageNavigation(title: String) -> some View {
-        modifier(AppSecondaryPageNavigation(title: title))
+    func appSecondaryPageNavigation(title: String, isScrolled: Bool = false) -> some View {
+        modifier(AppSecondaryPageNavigation(title: title, isScrolled: isScrolled))
     }
 
     /// Fades the clipped edges of a horizontal ScrollView only while there is

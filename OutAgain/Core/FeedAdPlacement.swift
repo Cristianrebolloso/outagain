@@ -2,7 +2,8 @@ import Foundation
 
 /// Ads are additional feed rows. Real post IDs and their ordering never change.
 enum FeedAdPlacement {
-    static let postsPerAd = 10
+    // Six posts plus one ad: sponsored rows occupy positions 7, 14, 21, ...
+    static let postsPerAd = 6
 
     static func anchors(in postIDs: [UUID]) -> [UUID] {
         postIDs.enumerated().compactMap { index, id in
@@ -17,7 +18,16 @@ enum FeedAdPlacement {
     }
 }
 
+struct FeedAdRequestState: Equatable {
+    let postIDs: [UUID]
+    let enabled: Bool
+}
+
 struct FeedAdConfiguration {
+    static func isEnabled(in config: [String: String]) -> Bool {
+        config["feed_ads_enabled"] == "true"
+    }
+
     static let testAppID = "ca-app-pub-3940256099942544~1458002511"
     static let testUnitID = "ca-app-pub-3940256099942544/3986624511"
 

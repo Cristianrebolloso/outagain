@@ -507,6 +507,10 @@ struct SupabaseAnnouncementSeenRequest: Encodable {
     var announcement_id: UUID
 }
 
+struct SupabaseFeedAdsUpdateRequest: Encodable {
+    var enabled: Bool
+}
+
 struct SupabaseMaintenanceConfigUpdateRequest: Encodable {
     var enabled: Bool
     var title: String

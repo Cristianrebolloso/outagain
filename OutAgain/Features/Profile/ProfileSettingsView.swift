@@ -16,6 +16,8 @@ struct ProfileSettingsView: View {
     @Environment(PermissionCenter.self) private var permissions
     @Environment(\.openURL) private var openURL
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var isTitleScrolled = false
     @State private var isBlockedUsersSheetPresented = false
     @State private var isChangePasswordPresented = false
     @State private var isPasskeysPresented = false
@@ -27,7 +29,6 @@ struct ProfileSettingsView: View {
                 accentColorPanel
                 notificationsPanel
                 permissionsPanel
-                FeedAdPrivacySettings()
                 safetyPanel
                 accountPanel
             }
@@ -35,12 +36,26 @@ struct ProfileSettingsView: View {
             .padding(.top, AppLayout.secondaryPageTopPadding)
             .padding(.bottom, AppLayout.secondaryPageBottomPadding)
         }
+        .onScrollGeometryChange(for: Bool.self) { geometry in
+            geometry.contentOffset.y + geometry.contentInsets.top > 8
+        } action: { _, isScrolled in
+            isTitleScrolled = isScrolled
+        }
+        #if DEBUG
+        .modifier(DuoScrollPreviewControls())
+        #endif
         .scrollIndicators(.hidden)
         .scrollContentBackground(.hidden)
         .modifier(MainPageSurface())
-        .appSecondaryPageNavigation(title: "Settings")
+        .appSecondaryPageNavigation(title: "Settings", isScrolled: isTitleScrolled)
         .task(id: store.viewer?.id) {
+            await permissions.refreshNotificationStatus()
             await store.refreshNotificationPreferences()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                Task { await permissions.refreshNotificationStatus() }
+            }
         }
         .navigationDestination(isPresented: $isChangePasswordPresented) {
             ChangePasswordView()
@@ -635,6 +650,8 @@ default: break
                 }
                 .buttonStyle(.plain)
 
+                FeedAdPrivacySettings()
+
                 Divider().overlay(AppTheme.line)
 
                 Button {
@@ -674,22 +691,21 @@ default: break
 
     private func requestNotifications() {
         switch permissions.notificationsStatus {
-        case .granted:
-            break
+        case .granted, .denied:
+            guard let url = URL(string: UIApplication.openNotificationSettingsURLString) else { return }
+            openURL(url)
         case .notDetermined:
             Task {
                 await permissions.requestNotifications()
             }
-        case .denied:
-            openAppSettings()
         }
     }
 
     private func requestLocation() {
         switch permissions.locationStatus {
-        case .granted, .notDetermined:
+        case .notDetermined:
             permissions.requestLocation()
-        case .denied:
+        case .granted, .denied:
             openAppSettings()
         }
     }
@@ -715,20 +731,26 @@ default: break
                 .frame(width: 34, height: 34)
                 .background(.white.opacity(0.05), in: Circle())
 
-            HStack(spacing: 8) {
-                Text(title)
-                    .font(AppTypography.rowTitle)
-                    .foregroundStyle(.white)
-
-                Text(state.rawValue)
-                    .font(AppTypography.metadataEmphasis)
-                    .foregroundStyle(state == .granted ? AppTheme.activeGreen : AppTheme.softText)
-            }
+            Text(title)
+                .font(AppTypography.rowTitle)
+                .foregroundStyle(.white)
+                .fixedSize(horizontal: false, vertical: true)
 
             Spacer(minLength: 12)
 
-            Button(actionTitle, action: action)
-                .buttonStyle(.glass)
+            Button(action: action) {
+                HStack(spacing: 6) {
+                    Text(actionTitle)
+                    if state != .notDetermined {
+                        Image(systemName: "arrow.up.right")
+                            .font(AppTypography.caption)
+                    }
+                }
+                .foregroundStyle(.white)
+            }
+            .buttonStyle(.glass)
+            .accessibilityLabel("\(title): \(state.rawValue)")
+            .accessibilityHint(state == .notDetermined ? "Request permission" : "Open system settings")
         }
     }
 

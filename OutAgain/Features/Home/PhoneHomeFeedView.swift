@@ -221,7 +221,7 @@ struct PhoneHomeFeedView: View {
                     }
                 )
                 .onAppear { feedAds.postAppeared(at: index, postIDs: postIDs) }
-                if adAnchors.contains(post.id) {
+                if store.areFeedAdsEnabled && adAnchors.contains(post.id) {
                     FeedNativeAdCard(anchorID: post.id)
                 }
             }
@@ -249,8 +249,8 @@ struct PhoneHomeFeedView: View {
                 }
             }
         }
-        .task(id: postIDs) {
-            await feedAds.prepare(postIDs: postIDs, isLayoutPreview: store.isLayoutPreview)
+        .task(id: FeedAdRequestState(postIDs: postIDs, enabled: store.areFeedAdsEnabled)) {
+            await feedAds.prepare(postIDs: postIDs, isLayoutPreview: store.isLayoutPreview, enabled: store.areFeedAdsEnabled)
         }
     }
 

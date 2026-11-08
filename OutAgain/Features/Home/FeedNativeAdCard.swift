@@ -4,10 +4,11 @@ import UIKit
 
 struct FeedNativeAdCard: View {
     @Environment(FeedAdStore.self) private var ads
+    @Environment(AppStore.self) private var store
     let anchorID: UUID
 
     var body: some View {
-        if let slot = ads.slots[anchorID], slot.ad != nil || slot.measuredHeight > 0 {
+        if store.areFeedAdsEnabled, let slot = ads.slots[anchorID] {
             Group {
                 if let ad = slot.ad {
                     FeedNativeAdContent(ad: ad)
@@ -15,10 +16,8 @@ struct FeedNativeAdCard: View {
                             if height > 0 { slot.measuredHeight = height }
                         }
                 } else {
-                    // A recycled offscreen creative reloads without collapsing
-                    // the row above the reader's current scroll position.
-                    Color.clear.frame(height: slot.measuredHeight)
-                        .accessibilityHidden(true)
+                    FeedHousePromoCard()
+                        .frame(minHeight: slot.measuredHeight > 0 ? slot.measuredHeight : nil)
                 }
             }
             .primaryGlass(in: .roundedRect(cornerRadius: PostPhotoFormat.cornerRadius))
@@ -26,6 +25,51 @@ struct FeedNativeAdCard: View {
             .onAppear { ads.appeared(slot) }
             .onDisappear { ads.disappeared(slot) }
         }
+    }
+}
+
+/// App-owned fallback, never registered as a Google impression or click.
+private struct FeedHousePromoCard: View {
+    @Environment(AppStore.self) private var store
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 12) {
+                Image("AppIconPreview")
+                    .resizable().scaledToFit()
+                    .frame(width: 44, height: 44)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Out Again").font(AppTypography.feedAuthor)
+                    Text("From Out Again").font(AppTypography.metadata)
+                        .foregroundStyle(AppTheme.softText)
+                }
+            }
+            ZStack {
+                RoundedRectangle(cornerRadius: 22)
+                    .fill(LinearGradient(colors: [.purple.opacity(0.45), .blue.opacity(0.15), .black.opacity(0.4)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                VStack(spacing: 16) {
+                    Image(systemName: "camera.fill")
+                        .font(.system(size: 52, weight: .medium))
+                    Text("Good nights deserve\nto be shared.")
+                        .font(AppTypography.pageTitle)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(24)
+            }
+            .frame(height: 260)
+            Text("Catch the moment. Share it with your friends.")
+                .font(AppTypography.body)
+                .foregroundStyle(AppTheme.softText)
+            Button { store.openPostFlow() } label: {
+                Label("Take a photo", systemImage: "camera")
+                    .font(AppTypography.actionLabel)
+                    .frame(maxWidth: .infinity).padding(.vertical, 12)
+            }
+            .buttonStyle(.glass)
+        }
+        .foregroundStyle(.white)
+        .padding(16)
     }
 }
 

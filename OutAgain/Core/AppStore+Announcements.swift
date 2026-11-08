@@ -46,6 +46,17 @@ extension AppStore {
         announcements.filter { !pendingSeenAppAnnouncementIDs.contains($0.id) }
     }
 
+    func saveFeedAdsEnabled(_ enabled: Bool) async throws {
+        guard isViewerAdmin else {
+            throw SupabaseBackendError.requestFailed("Only @admin can manage feed ads.", statusCode: 403)
+        }
+        let updated = try await backend.setFeedAdsEnabled(enabled)
+        guard updated["feed_ads_enabled"] == (enabled ? "true" : "false") else {
+            throw SupabaseBackendError.requestFailed("The ad setting was not saved. Please try again.", statusCode: 500)
+        }
+        appConfig.merge(updated) { _, new in new }
+    }
+
     func saveMaintenanceMode(enabled: Bool, title: String, message: String) async throws {
         guard isViewerAdmin else {
             throw SupabaseBackendError.requestFailed("Only @admin can manage maintenance mode.", statusCode: 403)

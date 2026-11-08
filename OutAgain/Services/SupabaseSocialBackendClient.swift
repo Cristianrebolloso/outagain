@@ -1235,6 +1235,14 @@ final class SupabaseSocialBackendClient: SocialBackendClient {
         )
     }
 
+    func setFeedAdsEnabled(_ enabled: Bool) async throws -> [String: String] {
+        let records: [SupabaseAppConfigRecord] = try await sendRest(
+            path: "rpc/admin_set_feed_ads", method: "POST",
+            body: SupabaseFeedAdsUpdateRequest(enabled: enabled)
+        )
+        return Dictionary(uniqueKeysWithValues: records.map { ($0.key, $0.value) })
+    }
+
     func setMaintenanceMode(enabled: Bool, title: String, message: String) async throws -> [String: String] {
         let records: [SupabaseAppConfigRecord] = try await sendRest(
             path: "rpc/admin_set_app_maintenance_config",

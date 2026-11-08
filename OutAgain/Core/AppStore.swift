@@ -327,6 +327,10 @@ final class AppStore {
         SignInIdentifierRules.normalized(authDraft.identifier)
     }
 
+    var areFeedAdsEnabled: Bool {
+        FeedAdConfiguration.isEnabled(in: appConfig)
+    }
+
     var arePasskeysEnabled: Bool {
         appConfig["passkeys_enabled"] == "true"
     }

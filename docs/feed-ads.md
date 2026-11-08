@@ -1,13 +1,16 @@
 # Home feed ads
 
-Home inserts an additional native ad after 10, 20, 30, … actual posts, on regular iPhone and Duo. No posts are replaced. Group, profile, and tonight feeds do not receive ads. Google owns impressions, click handling, and AdChoices. Each card displays “Sponsored” using the same typography as post author names, with the advertiser below when supplied; it has no fake social reactions.
+Home inserts an additional card after 6, 12, 18, … actual posts (feed positions 7, 14, 21, …), on regular iPhone and Duo. No posts are replaced. Group, profile, and tonight feeds do not receive ads. Google owns impressions, click handling, and AdChoices. Each card displays “Sponsored” using the same typography as post author names, with the advertiser below when supplied; it has no fake social reactions.
 
 On expanded Duo, the left comments pane fades to the ambient background while an ad is the dominant visible feed item. The heading, thread, and composer are hidden together. Comments return when a normal post becomes dominant; existing drafts retain their original post and are not discarded. Ad visibility uses a distinct identity from its anchor post and the same boundary tolerance as regular post following.
 
 ## Current configuration
 
-- Debug: Google's native **test ads**, which do not earn money.
-- Release: production IDs are installed, but ad serving remains **disabled** until the consent messages, store metadata, and verification below are complete. The SDK is not started by this integration until ads are enabled and Google's UMP authorizes requests.
+- **Admin → Feed Ads → Show feed ads** controls `app_config.feed_ads_enabled`, default **false**. Only the verified admin can update it; the database enforces this independently of the UI.
+- **Off:** no sponsored or house-promo rows, and loaded ad slots are discarded. **On:** production builds request live ads; an app-owned Out Again promo fills each placement while waiting, on no fill, on consent failure, or while AdMob is not ready. The promo is outside Google's NativeAdView and generates no Google ad impressions/clicks.
+- Release 2.2 build 6 includes production IDs and `OUTAGAIN_ADS_MODE=live`; its remote switch stays off until deliberately enabled. Debug uses Google's test unit when the same remote switch is on. Test mode is rejected in Release.
+- Open signed-in apps refresh public configuration approximately every 10 seconds and on foreground. An off response removes cards immediately; offline clients retain their last known session setting until the next successful refresh. A new launch defaults off if configuration cannot be loaded.
+- The SDK is not started by this integration until the remote switch is on and Google's UMP authorizes requests.
 - Local layout previews remain offline unless launched with `--feed-ads-preview`.
 - Ads request non-personalized delivery (`npa=1` and publisher privacy personalization disabled), disable Google's publisher first-party identifier and automatic device-location collection, and do not request App Tracking Transparency authorization. No Out Again profile, photos, social graph, or post location is supplied to the ad SDK. Google may still infer approximate location from the network connection.
 - UMP collects applicable privacy choices before ads load. Settings exposes “Ad privacy choices” when UMP requires it.
@@ -23,7 +26,7 @@ On expanded Duo, the left comments pane fades to the ambient background while an
 - Website source: sibling `../outagain-website`, published in `Cristianrebolloso/cristianrebolloso.github.io`, commit `1d1b432`. Only the website files were pushed. Existing policy update in `Cristianrebolloso/outagain` is commit `c242f656beabef4388ed1077ab7aaf95195394f1`.
 - Apple Developer account displayed its October 13, 2026 license agreement as accepted October 27, 2026. The older App Store Connect banner alone is not proof of an outstanding agreement.
 
-Browser work was paused at the user's request. The following items are **not complete**.
+The November 8 replacement release adds remote control. Provider readiness and consent messages still need live dashboard verification before enabling paid ads.
 
 ## Remaining activation steps
 
@@ -33,7 +36,7 @@ AdMob is free to use: https://support.google.com/admob/answer/7356092
 2. Set up and publish applicable **European regulations** and **US state regulations** messages under AdMob **Privacy & messaging** for Out Again. Include a clear refusal choice and use the published privacy-policy URL. The IDFA explainer is not used by this integration. Verify UMP consent and the Settings privacy-options entry in Google's regional test modes.
 3. In AdMob app settings, request verification again after the website link is public. The last check still showed **Requires review** with app verification incomplete; publishing the file alone does not establish AdMob approval. Review account/payment setup in the dashboard; payout, tax, and identity details were not accessed or submitted.
 4. Update App Store privacy disclosures to cover the actual Google Mobile Ads/UMP collection. See the preparation notes below and Google's disclosure guide. The published website policy is updated; App Store privacy answers remain unchanged.
-5. After setup and verification are ready, set **Release** `OUTAGAIN_ADS_MODE` to `live`. The app and native unit IDs are already configured. Keep Debug on `test`.
+5. After setup and verification are ready, use **Admin → Feed Ads → Show feed ads**. No new binary is needed to turn ads on/off after build 6 is approved and installed. Build 4 and older cannot be remotely enabled.
 6. Validate consent accepted, declined, changed, and no-network/no-fill behavior using test ads. Build a signed distribution archive, upload the next app version, and submit for App Review. No archive was uploaded and no update was submitted in this setup pass.
 
 ### App Store privacy preparation
@@ -51,7 +54,7 @@ xcrun swiftc OutAgain/Core/FeedAdPlacement.swift scripts/check-feed-ads.swift -o
 /tmp/check-feed-ads
 ```
 
-For the actual SDK and 30 local sample posts, launch a Debug build with `--duo-layout-preview --duo-continuity --feed-ads-preview`. Add `--duo-theme-wide-check` for the existing Duo layout check. The ad SDK uses Google's test unit; the app's social backend stays offline. Scroll past the tenth actual post.
+For the actual SDK and 30 local sample posts, launch a Debug build with `--duo-layout-preview --duo-continuity --feed-ads-preview`. Add `--duo-theme-wide-check` for the existing Duo layout check. The ad SDK uses Google's test unit; the app's social backend stays offline. Scroll past the sixth actual post. Use `--house-ads-preview` instead to keep Google offline and inspect the app-owned fallback.
 
 On November 7, the Release simulator build and feed placement/configuration checks passed after connecting the production IDs and privacy controls. This was a compilation/configuration check, not a signed distribution archive or live-ad validation.
 
@@ -62,3 +65,9 @@ On November 7, the Release simulator build and feed placement/configuration chec
 - Native asset registration and attribution: https://developers.google.com/admob/ios/native/advanced
 - Consent and privacy options: https://developers.google.com/admob/ios/privacy
 - App Store data disclosure guidance: https://developers.google.com/admob/ios/privacy/data-disclosure
+
+## November 8 switch validation
+
+The public-Xcode 27.2 archive is version 2.2 build 6. Placement tests cover positions 7/14/21, pagination, deletion, incomplete pages, malformed config, and Release rejection of sample/test IDs. A transaction-scoped database check verified admin on/off, rejection of anonymous/member RPC calls and direct writes, and rejection of updates to unrelated config. The transaction was rolled back; the deployed switch remains `false`.
+
+Migration `20261108070015_admin_feed_ads_switch.sql` narrows public config reads to app-safe keys. It excludes legacy server-only config values without changing server-side access. The new RPC is SECURITY INVOKER, with column-level UPDATE permission plus an admin-only RLS policy limited to this one key.

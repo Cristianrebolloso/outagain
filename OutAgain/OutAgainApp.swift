@@ -79,6 +79,9 @@ struct OutAgainApp: App {
                         .environment(permissionCenter)
                         .environment(feedAds)
                         .onChange(of: store.viewer?.id) { _, _ in feedAds.clearFeed() }
+                        .onChange(of: store.areFeedAdsEnabled) { _, enabled in
+                            if !enabled { feedAds.clearFeed() }
+                        }
                         .onOpenURL { url in
                             store.handleIncomingURL(url)
                         }
