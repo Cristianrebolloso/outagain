@@ -1,13 +1,34 @@
 import SwiftUI
+import UIKit
 
 @main
 struct OutAgainApp: App {
     @UIApplicationDelegateAdaptor(OutAgainAppDelegate.self) private var appDelegate
     @State private var store: AppStore
     @State private var permissionCenter = PermissionCenter()
+    @State private var feedAds = FeedAdStore()
     @State private var configurationError: String?
 
     init() {
+        // Keep system navigation and Liquid Glass behavior; customize only type.
+        let navigationTitle = UIFont(name: "GeneralSans-Semibold", size: 17)
+            ?? UIFont.preferredFont(forTextStyle: .headline)
+        let largeTitle = UIFont(name: "CabinetGrotesk-Bold", size: 34)
+            ?? UIFont.preferredFont(forTextStyle: .largeTitle)
+        UINavigationBar.appearance().titleTextAttributes = [
+            .font: UIFontMetrics(forTextStyle: .headline).scaledFont(for: navigationTitle)
+        ]
+        UINavigationBar.appearance().largeTitleTextAttributes = [
+            .font: UIFontMetrics(forTextStyle: .largeTitle).scaledFont(for: largeTitle)
+        ]
+
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--duo-layout-preview") {
+            _store = State(initialValue: DuoLayoutFixtures.makeStore())
+            _configurationError = State(initialValue: nil)
+            return
+        }
+        #endif
         // Give URLSession's shared cache enough room to hold avatars and post
         // photos in memory and on disk. AsyncImage uses URLSession under the
         // hood, so this makes every image load a cache hit after the first
@@ -22,11 +43,9 @@ struct OutAgainApp: App {
 
         let environment = SupabaseEnvironment.current()
 
-        // The app is a real Supabase client only — no offline or in-memory
-        // fallback. If the environment is missing or incomplete, we surface a
-        // readable configuration screen instead of silently pretending the app
-        // works. This guarantees every byte the user sees came from the
-        // backend.
+        // The app is a real Supabase client only. If a build is pointed at
+        // placeholder values, surface a readable configuration screen instead
+        // of pretending offline/local data is the product.
         guard environment.isConfigured else {
             _store = State(
                 initialValue: AppStore(
@@ -34,7 +53,7 @@ struct OutAgainApp: App {
                 )
             )
             _configurationError = State(
-                initialValue: "Missing Supabase configuration. Set SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY in Info.plist before running the app."
+                initialValue: "This build is pointing at placeholder Supabase values. Use the production build settings or set valid SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY overrides."
             )
             return
         }
@@ -58,14 +77,20 @@ struct OutAgainApp: App {
                     ContentView()
                         .environment(store)
                         .environment(permissionCenter)
+                        .environment(feedAds)
+                        .onChange(of: store.viewer?.id) { _, _ in feedAds.clearFeed() }
                         .onOpenURL { url in
                             store.handleIncomingURL(url)
                         }
                 }
             }
+            .background {
+                if store.isDuoDevice { OutsideTapKeyboardDismissal() }
+            }
+            .font(AppTypography.body)
             .preferredColorScheme(.dark)
             .task {
-                guard configurationError == nil else { return }
+                guard configurationError == nil, !store.isLayoutPreview else { return }
                 await permissionCenter.reregisterRemoteNotificationsIfAuthorized()
             }
         }
@@ -82,11 +107,11 @@ private struct ConfigurationErrorView: View {
                 .foregroundStyle(.orange)
 
             Text("Out Again isn't configured yet")
-                .font(.system(.title2, design: .serif, weight: .bold))
+                .font(AppTypography.sheetTitle)
                 .foregroundStyle(.white)
 
             Text(message)
-                .font(.system(.subheadline, design: .rounded))
+                .font(AppTypography.rowSubtitle)
                 .foregroundStyle(.white.opacity(0.8))
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 28)

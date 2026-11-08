@@ -30,16 +30,35 @@ extension SupabaseSocialBackendClient {
         }
 
         guard expiresSoon, let refreshToken = session.refresh_token else { return }
+        let refreshGeneration = authSessionGeneration
 
-        do {
-            let refreshed: SupabaseAuthSession = try await sendAuth(
+        if let authRefreshTask {
+            let refreshed = try await authRefreshTask.value
+            guard authSessionGeneration == refreshGeneration else { return }
+            persistSession(refreshed)
+            return
+        }
+
+        let refreshTask = Task { [weak self] () throws -> SupabaseAuthSession in
+            guard let self else {
+                throw SupabaseBackendError.notAuthenticated
+            }
+            return try await self.sendAuth(
                 path: "token",
                 queryItems: [URLQueryItem(name: "grant_type", value: "refresh_token")],
                 body: SupabaseRefreshTokenGrantRequest(refresh_token: refreshToken)
             )
-            authSession = refreshed
+        }
+        authRefreshTask = refreshTask
+
+        do {
+            let refreshed = try await refreshTask.value
+            guard authSessionGeneration == refreshGeneration else { return }
             persistSession(refreshed)
+            authRefreshTask = nil
         } catch {
+            guard authSessionGeneration == refreshGeneration else { return }
+            authRefreshTask = nil
             // Only invalidate the stored session when the server has explicitly
             // and definitively rejected the refresh token. The criteria are tight
             // on purpose: a single transient failure — DNS blip, timeout, airplane
@@ -71,74 +90,233 @@ extension SupabaseSocialBackendClient {
 
     func fetchCurrentProfile() async throws -> SupabaseProfileRecord? {
         let userID = try currentUserID()
-        return try await fetchProfiles(
+        guard var record = try await fetchProfiles(
             queryItems: [
-                URLQueryItem(name: "select", value: SupabaseProfileRecord.selectList),
+                URLQueryItem(name: "select", value: SupabaseProfileRecord.viewerSelectList),
                 URLQueryItem(name: "id", value: "eq.\(userID.uuidString.lowercased())"),
                 URLQueryItem(name: "limit", value: "1")
             ]
-        ).first
+        ).first else {
+            return nil
+        }
+
+        record.is_banned = (try? await fetchCurrentBanStatus(for: userID)) ?? false
+        return record
     }
 
     func fetchProfiles(queryItems: [URLQueryItem]) async throws -> [SupabaseProfileRecord] {
-        try await sendRest(
-            path: "profiles",
-            method: "GET",
-            queryItems: queryItems,
-            responseType: [SupabaseProfileRecord].self
-        )
+        do {
+            return try await sendRest(
+                path: "profiles",
+                method: "GET",
+                queryItems: queryItems,
+                responseType: [SupabaseProfileRecord].self
+            )
+        } catch {
+            guard let fallbackQueryItems = profileQueryItemsAfterMissingColumn(error, from: queryItems)
+            else {
+                throw error
+            }
+
+            do {
+                return try await sendRest(
+                    path: "profiles",
+                    method: "GET",
+                    queryItems: fallbackQueryItems,
+                    responseType: [SupabaseProfileRecord].self
+                )
+            } catch {
+                guard let legacyQueryItems = profileQueryItemsAfterMissingColumn(error, from: fallbackQueryItems)
+                else {
+                    throw error
+                }
+
+                return try await sendRest(
+                    path: "profiles",
+                    method: "GET",
+                    queryItems: legacyQueryItems,
+                    responseType: [SupabaseProfileRecord].self
+                )
+            }
+        }
     }
 
     func fetchProfilesByIDs(_ ids: [UUID]) async throws -> [SupabaseProfileRecord] {
         guard !ids.isEmpty else { return [] }
-        return try await fetchProfiles(
+
+        // Route through the SECURITY DEFINER RPC so non-friend profiles still
+        // hydrate. After migration 202605200010 the profiles table's RLS only
+        // returns rows for self/friends/requesters/admins, which silently
+        // pruned commenters and reactors who weren't direct friends of the
+        // viewer. The RPC exposes only the same public columns as the direct
+        // query (id, username, display_name, avatar_path, avatar_version,
+        // background_theme, is_verified) — no private fields leak.
+        //
+        // Direct-table fallback covers old DBs where the RPC isn't present,
+        // matching the pattern in fetchProfilesByUsernames.
+        do {
+            return try await sendRest(
+                path: "rpc/profile_summaries_by_ids",
+                method: "POST",
+                body: SupabaseProfileSummariesByIDsRequest(profile_ids: ids)
+            )
+        } catch {
+            return try await fetchProfiles(
+                queryItems: [
+                    URLQueryItem(name: "select", value: SupabaseProfileRecord.selectList),
+                    URLQueryItem(name: "id", value: "in.\(SupabaseQueryList.uuidValues(ids))"),
+                    URLQueryItem(name: "limit", value: "\(max(ids.count, 1))")
+                ]
+            )
+        }
+    }
+
+    func fetchProfilesByUsernames(_ usernames: [String]) async throws -> [SupabaseProfileRecord] {
+        let normalized = Array(Set(usernames.map(UsernameRules.normalized))).sorted()
+        guard !normalized.isEmpty else { return [] }
+
+        do {
+            return try await sendRest(
+                path: "rpc/profiles_by_exact_usernames",
+                method: "POST",
+                body: SupabaseExactUsernameProfileRequest(search_usernames: normalized)
+            )
+        } catch {
+            return try await fetchProfiles(
+                queryItems: [
+                    URLQueryItem(name: "select", value: SupabaseProfileRecord.selectList),
+                    URLQueryItem(name: "username", value: "in.\(SupabaseQueryList.textValues(normalized))"),
+                    URLQueryItem(name: "limit", value: "\(normalized.count)")
+                ]
+            )
+        }
+    }
+
+    func isUsernameAvailable(_ username: String) async throws -> Bool {
+        let normalized = UsernameRules.normalized(username)
+        do {
+            return try await sendRest(
+                path: "rpc/is_username_available",
+                method: "POST",
+                body: SupabaseUsernameAvailabilityRequest(search_username: normalized)
+            )
+        } catch {
+            let existing = try await fetchProfiles(
+                queryItems: [
+                    URLQueryItem(name: "select", value: SupabaseProfileRecord.selectList),
+                    URLQueryItem(name: "username", value: "eq.\(normalized)"),
+                    URLQueryItem(name: "limit", value: "1")
+                ]
+            )
+            return existing.allSatisfy { $0.id == currentUserIDOptional }
+        }
+    }
+
+    func fetchCurrentBanStatus(for userID: UUID) async throws -> Bool {
+        do {
+            return try await sendRest(
+                path: "rpc/is_profile_banned",
+                method: "POST",
+                body: SupabaseProfileBanRequest(user_id: userID)
+            )
+        } catch {
+            return try await fetchProfiles(
+                queryItems: [
+                    URLQueryItem(name: "select", value: "id,is_banned"),
+                    URLQueryItem(name: "id", value: "eq.\(userID.uuidString.lowercased())"),
+                    URLQueryItem(name: "limit", value: "1")
+                ]
+            ).first?.is_banned ?? false
+        }
+    }
+
+    func fetchProfilesByExactUsername(_ username: String) async throws -> [SupabaseProfileRecord] {
+        let normalized = UsernameRules.normalized(username)
+        guard UsernameRules.isValid(normalized) else { return [] }
+        return try await fetchProfilesByUsernames([normalized])
+    }
+
+    func fetchAllUsersPageRecords(offset: Int, limit: Int) async throws -> [SupabaseProfileRecord] {
+        try await fetchProfiles(
             queryItems: [
                 URLQueryItem(name: "select", value: SupabaseProfileRecord.selectList),
-                URLQueryItem(name: "id", value: "in.\(SupabaseQueryList.uuidValues(ids))"),
-                URLQueryItem(name: "limit", value: "\(max(ids.count, 1))")
+                URLQueryItem(name: "order", value: "display_name.asc"),
+                URLQueryItem(name: "limit", value: "\(limit)"),
+                URLQueryItem(name: "offset", value: "\(offset)")
             ]
         )
     }
 
     func fetchSuggestedProfiles(excluding ids: [UUID]) async throws -> [SupabaseProfileRecord] {
-        guard !ids.isEmpty else {
+        let excludedIDs = Set(ids)
+        do {
+            let viewerID = try currentUserID()
+            let records: [SupabaseProfileRecord] = try await sendRest(
+                path: "rpc/profile_suggestions_for_viewer",
+                method: "POST",
+                body: SupabaseProfileSuggestionsRequest(viewer_id: viewerID, lim: 12)
+            )
+            return records.filter { !excludedIDs.contains($0.id) }
+        } catch {
+            guard !ids.isEmpty else {
+                return try await fetchProfiles(
+                    queryItems: [
+                        URLQueryItem(name: "select", value: SupabaseProfileRecord.selectList),
+                        URLQueryItem(name: "order", value: "created_at.desc"),
+                        URLQueryItem(name: "limit", value: "12")
+                    ]
+                )
+            }
+
             return try await fetchProfiles(
                 queryItems: [
                     URLQueryItem(name: "select", value: SupabaseProfileRecord.selectList),
+                    URLQueryItem(name: "id", value: "not.in.\(SupabaseQueryList.uuidValues(ids))"),
                     URLQueryItem(name: "order", value: "created_at.desc"),
                     URLQueryItem(name: "limit", value: "12")
                 ]
             )
         }
-
-        return try await fetchProfiles(
-            queryItems: [
-                URLQueryItem(name: "select", value: SupabaseProfileRecord.selectList),
-                URLQueryItem(name: "id", value: "not.in.\(SupabaseQueryList.uuidValues(ids))"),
-                URLQueryItem(name: "order", value: "created_at.desc"),
-                URLQueryItem(name: "limit", value: "12")
-            ]
-        )
     }
 
     /// Fetch every friendship row (accepted, pending, blocked, etc.) that
-    /// involves the given user. The bootstrap uses this to build the friend
-    /// list, the incoming/outgoing request inboxes, and the blocked set from
-    /// a single round trip.
-    func fetchAllFriendships(for userID: UUID) async throws -> [SupabaseStoredFriendshipRecord] {
-        try await sendRest(
-            path: "friendships",
-            method: "GET",
-            queryItems: [
-                URLQueryItem(name: "select", value: SupabaseStoredFriendshipRecord.selectList),
-                URLQueryItem(
-                    name: "or",
-                    value: "(user_id.eq.\(userID.uuidString.lowercased()),friend_id.eq.\(userID.uuidString.lowercased()))"
-                ),
-                URLQueryItem(name: "limit", value: "500")
-            ],
-            responseType: [SupabaseStoredFriendshipRecord].self
-        )
+    /// involves the given user. Paging keeps the common case to one request
+    /// while still guaranteeing the Home feed sees every direct friend.
+    static let friendshipBootstrapPageSize = 200
+
+    func fetchAllFriendships(
+        for userID: UUID,
+        maxTotal: Int = 5_000
+    ) async throws -> [SupabaseStoredFriendshipRecord] {
+        var rows: [SupabaseStoredFriendshipRecord] = []
+        var offset = 0
+
+        while rows.count < maxTotal {
+            let remaining = maxTotal - rows.count
+            let fetchLimit = min(Self.friendshipBootstrapPageSize, remaining)
+            let page: [SupabaseStoredFriendshipRecord] = try await sendRest(
+                path: "friendships",
+                method: "GET",
+                queryItems: [
+                    URLQueryItem(name: "select", value: SupabaseStoredFriendshipRecord.selectList),
+                    URLQueryItem(
+                        name: "or",
+                        value: "(user_id.eq.\(userID.uuidString.lowercased()),friend_id.eq.\(userID.uuidString.lowercased()))"
+                    ),
+                    URLQueryItem(name: "order", value: "created_at.desc,id.desc"),
+                    URLQueryItem(name: "limit", value: "\(fetchLimit)"),
+                    URLQueryItem(name: "offset", value: "\(offset)")
+                ],
+                responseType: [SupabaseStoredFriendshipRecord].self
+            )
+
+            rows.append(contentsOf: page)
+            // Fewer rows than requested means we've exhausted the table.
+            guard page.count == fetchLimit else { break }
+            offset += page.count
+        }
+
+        return rows
     }
 
     func fetchFriendship(from userID: UUID, to friendID: UUID) async throws -> SupabaseStoredFriendshipRecord? {
@@ -157,15 +335,18 @@ extension SupabaseSocialBackendClient {
     }
 
     func updateFriendshipStatus(_ id: UUID, to status: String) async throws {
-        try await sendRestWithoutResponse(
+        let updated: [SupabaseInsertedRecord] = try await sendRest(
             path: "friendships",
             method: "PATCH",
             queryItems: [
                 URLQueryItem(name: "id", value: "eq.\(id.uuidString.lowercased())")
             ],
-            prefer: "return=minimal",
+            prefer: "return=representation",
             body: SupabaseFriendshipStatusPatch(status: status)
         )
+        guard updated.contains(where: { $0.id == id }) else {
+            throw SupabaseBackendError.requestFailed("That friend request is no longer available.", statusCode: 404)
+        }
     }
 
     /// Cached set of reserved usernames. Reservations rarely change, so we
@@ -197,15 +378,79 @@ extension SupabaseSocialBackendClient {
     }
 
     /// Hit a Supabase auth endpoint that doesn't need a body (logout).
-    func postAuth(path: String) async throws {
+    func postAuth(path: String, queryItems: [URLQueryItem] = []) async throws {
         try await ensureAuthenticatedSession()
         var request = try makeRequest(
-            url: environment.authURL(path: path),
+            url: environment.authURL(path: path, queryItems: queryItems),
             method: "POST",
             authenticated: true
         )
         request.httpBody = Data("{}".utf8)
         _ = try await perform(request)
+    }
+
+    func postAuth(path: String, queryItems: [URLQueryItem] = [], accessToken: String) async throws {
+        var request = try makeRequest(
+            url: environment.authURL(path: path, queryItems: queryItems),
+            method: "POST",
+            authenticated: false
+        )
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.httpBody = Data("{}".utf8)
+        _ = try await perform(request)
+    }
+
+    func revokeCurrentDeviceSession(_ session: SupabaseAuthSession?) async throws {
+        // Supabase logout defaults to "global", which revokes this user's
+        // sessions everywhere. Always send the explicit local scope so signing
+        // out on one phone does not break another phone, browser, or simulator.
+        guard let session,
+              let refreshToken = session.refresh_token,
+              !refreshToken.isEmpty
+        else { return }
+
+        try await postAuth(
+            path: "logout",
+            queryItems: [URLQueryItem(name: "scope", value: "local")],
+            accessToken: session.access_token
+        )
+    }
+
+    func fetchAuthUser() async throws -> SupabaseAuthUser {
+        try await ensureAuthenticatedSession()
+        let request = try makeRequest(
+            url: environment.authURL(path: "user"),
+            method: "GET",
+            authenticated: true
+        )
+        let data = try await perform(request)
+        let user = try decode(SupabaseAuthUser.self, from: data)
+        persistAuthUser(user)
+        return user
+    }
+
+    func updateAuthUserPassword(_ password: String) async throws -> SupabaseAuthUser {
+        try await ensureAuthenticatedSession()
+        var request = try makeRequest(
+            url: environment.authURL(path: "user"),
+            method: "PUT",
+            authenticated: true
+        )
+        request.httpBody = try encode(SupabasePasswordUpdateRequest(password: password))
+        let data = try await perform(request)
+        let user = try decode(SupabaseAuthUser.self, from: data)
+        persistAuthUser(user)
+        return user
+    }
+
+    func persistAuthUser(_ user: SupabaseAuthUser) {
+        guard var session = authSession else { return }
+        let existingEmail = session.user?.email
+        session.user = SupabaseAuthUser(
+            id: user.id,
+            email: user.email ?? existingEmail
+        )
+        persistSession(session)
     }
 
     /// Feed query. After the RLS tightening in migration 0004, the database
@@ -214,33 +459,280 @@ extension SupabaseSocialBackendClient {
     /// the query plan cheap as the dataset grows. If no author IDs are
     /// provided (e.g. a new user with zero friends) we fall back to a
     /// self-only filter so we still return the user's own posts.
-    func fetchFeedPosts(authorIDs: [UUID], limit: Int) async throws -> [SupabaseFeedPostRecord] {
+    func fetchFeedPosts(
+        authorIDs: [UUID],
+        limit: Int,
+        offset: Int = 0,
+        createdAfter: Date? = nil,
+        createdBefore: Date? = nil
+    ) async throws -> [SupabaseFeedPostRecord] {
         let sanitized = Array(Set(authorIDs))
         guard !sanitized.isEmpty else { return [] }
+
+        var queryItems = [
+            URLQueryItem(name: "select", value: SupabaseFeedPostRecord.selectList),
+            URLQueryItem(name: "author_id", value: "in.\(SupabaseQueryList.uuidValues(sanitized))"),
+            URLQueryItem(name: "order", value: "created_at.desc"),
+            URLQueryItem(name: "limit", value: "\(limit)"),
+            URLQueryItem(name: "offset", value: "\(offset)")
+        ]
+
+        if let createdAfter {
+            queryItems.append(
+                URLQueryItem(
+                    name: "created_at",
+                    value: "gte.\(SupabaseDateCoder.iso8601Formatter.string(from: createdAfter))"
+                )
+            )
+        }
+
+        if let createdBefore {
+            queryItems.append(
+                URLQueryItem(
+                    name: "created_at",
+                    value: "lt.\(SupabaseDateCoder.iso8601Formatter.string(from: createdBefore))"
+                )
+            )
+        }
 
         return try await sendRest(
             path: "posts",
             method: "GET",
-            queryItems: [
-                URLQueryItem(name: "select", value: SupabaseFeedPostRecord.selectList),
-                URLQueryItem(name: "author_id", value: "in.\(SupabaseQueryList.uuidValues(sanitized))"),
-                URLQueryItem(name: "order", value: "created_at.desc"),
-                URLQueryItem(name: "limit", value: "\(limit)")
-            ],
+            queryItems: queryItems,
             responseType: [SupabaseFeedPostRecord].self
         )
     }
 
-    /// Non-throwing wrapper around `fetchTonightFeed` — returns an empty array
-    /// on failure so it can be used inside an `async let` fan-out without
-    /// requiring a try/catch at the call site.
-    func fetchTonightFeedOrEmpty(viewerID: UUID, limit: Int) async -> [SupabaseFeedPostRecord] {
-        (try? await fetchTonightFeed(viewerID: viewerID, limit: limit)) ?? []
+    /// Feed query without an author filter. Used only for @admin views; RLS
+    /// still decides which rows are visible to the current session.
+    func fetchVisibleFeedPosts(
+        limit: Int,
+        offset: Int = 0,
+        createdAfter: Date? = nil,
+        createdBefore: Date? = nil
+    ) async throws -> [SupabaseFeedPostRecord] {
+        var queryItems = [
+            URLQueryItem(name: "select", value: SupabaseFeedPostRecord.selectList),
+            URLQueryItem(name: "order", value: "created_at.desc"),
+            URLQueryItem(name: "limit", value: "\(limit)"),
+            URLQueryItem(name: "offset", value: "\(offset)")
+        ]
+
+        if let createdAfter {
+            queryItems.append(
+                URLQueryItem(
+                    name: "created_at",
+                    value: "gte.\(SupabaseDateCoder.iso8601Formatter.string(from: createdAfter))"
+                )
+            )
+        }
+
+        if let createdBefore {
+            queryItems.append(
+                URLQueryItem(
+                    name: "created_at",
+                    value: "lt.\(SupabaseDateCoder.iso8601Formatter.string(from: createdBefore))"
+                )
+            )
+        }
+
+        return try await sendRest(
+            path: "posts",
+            method: "GET",
+            queryItems: queryItems,
+            responseType: [SupabaseFeedPostRecord].self
+        )
     }
 
-    /// Calls the `tonight_feed` RPC — returns posts within a 20-hour window
-    /// for the viewer's friend + FoF graph. One server-side query instead of
-    /// the client assembling and sending a large `author_id IN (...)` list.
+    func fetchFeedPost(id: UUID) async throws -> SupabaseFeedPostRecord? {
+        try await sendRest(
+            path: "posts",
+            method: "GET",
+            queryItems: [
+                URLQueryItem(name: "select", value: SupabaseFeedPostRecord.selectList),
+                URLQueryItem(name: "id", value: "eq.\(id.uuidString.lowercased())"),
+                URLQueryItem(name: "limit", value: "1")
+            ],
+            responseType: [SupabaseFeedPostRecord].self
+        ).first
+    }
+
+    func loadVisiblePostIDs(_ postIDs: [UUID]) async throws -> Set<UUID> {
+        let uniqueIDs = Array(Set(postIDs))
+        guard !uniqueIDs.isEmpty else { return [] }
+
+        var visibleIDs = Set<UUID>()
+        let chunkSize = 50
+        for start in stride(from: 0, to: uniqueIDs.count, by: chunkSize) {
+            let end = min(start + chunkSize, uniqueIDs.count)
+            let chunk = Array(uniqueIDs[start ..< end])
+            let rows: [SupabaseInsertedRecord] = try await sendRest(
+                path: "posts",
+                method: "GET",
+                queryItems: [
+                    URLQueryItem(name: "select", value: "id"),
+                    URLQueryItem(name: "id", value: "in.\(SupabaseQueryList.uuidValues(chunk))"),
+                    URLQueryItem(name: "limit", value: "\(chunk.count)")
+                ],
+                responseType: [SupabaseInsertedRecord].self
+            )
+            visibleIDs.formUnion(rows.map(\.id))
+        }
+
+        return visibleIDs
+    }
+
+    /// Pages through authored posts newest-first up to a hard ceiling of
+    /// `maxTotal` rows. The ceiling keeps bootstrap cost bounded: 200 posts
+    /// covers ~2 years of nightly posting and is more than any profile grid
+    /// needs to render. The paged `loadUserPostsPage` path handles lazy scroll.
+    nonisolated static let profilePostFetchCap = 200
+
+    func fetchAllFeedPosts(
+        authorIDs: [UUID],
+        pageSize: Int = 50,
+        maxTotal: Int = profilePostFetchCap,
+        createdAfter: Date? = nil,
+        createdBefore: Date? = nil
+    ) async throws -> [SupabaseFeedPostRecord] {
+        let sanitized = Array(Set(authorIDs))
+        guard !sanitized.isEmpty else { return [] }
+
+        var allPosts: [SupabaseFeedPostRecord] = []
+        var offset = 0
+
+        while allPosts.count < maxTotal {
+            let remaining = maxTotal - allPosts.count
+            let fetchLimit = min(pageSize, remaining)
+
+            let page = try await fetchFeedPosts(
+                authorIDs: sanitized,
+                limit: fetchLimit,
+                offset: offset,
+                createdAfter: createdAfter,
+                createdBefore: createdBefore
+            )
+
+            guard !page.isEmpty else { break }
+            allPosts.append(contentsOf: page)
+
+            // Fewer rows than requested means we've exhausted the table.
+            if page.count < fetchLimit { break }
+            offset += page.count
+        }
+
+        return allPosts
+    }
+
+    func fetchAllVisibleFeedPosts(
+        pageSize: Int = 50,
+        maxTotal: Int = profilePostFetchCap,
+        createdAfter: Date? = nil,
+        createdBefore: Date? = nil
+    ) async throws -> [SupabaseFeedPostRecord] {
+        var allPosts: [SupabaseFeedPostRecord] = []
+        var offset = 0
+
+        while allPosts.count < maxTotal {
+            let remaining = maxTotal - allPosts.count
+            let fetchLimit = min(pageSize, remaining)
+
+            let page = try await fetchVisibleFeedPosts(
+                limit: fetchLimit,
+                offset: offset,
+                createdAfter: createdAfter,
+                createdBefore: createdBefore
+            )
+
+            guard !page.isEmpty else { break }
+            allPosts.append(contentsOf: page)
+
+            if page.count < fetchLimit { break }
+            offset += page.count
+        }
+
+        return allPosts
+    }
+
+    func fetchProfileStatsPostRecords(
+        authorID: UUID,
+        pageSize: Int = 500,
+        maxTotal: Int = 2_000
+    ) async throws -> [SupabaseProfileStatsPostRecord] {
+        var allPosts: [SupabaseProfileStatsPostRecord] = []
+        var offset = 0
+
+        while allPosts.count < maxTotal {
+            let remaining = maxTotal - allPosts.count
+            let fetchLimit = min(pageSize, remaining)
+            let page: [SupabaseProfileStatsPostRecord] = try await sendRest(
+                path: "posts",
+                method: "GET",
+                queryItems: [
+                    URLQueryItem(name: "select", value: SupabaseProfileStatsPostRecord.selectList),
+                    URLQueryItem(name: "author_id", value: "eq.\(authorID.uuidString.lowercased())"),
+                    URLQueryItem(name: "order", value: "created_at.desc"),
+                    URLQueryItem(name: "limit", value: "\(fetchLimit)"),
+                    URLQueryItem(name: "offset", value: "\(offset)")
+                ],
+                responseType: [SupabaseProfileStatsPostRecord].self
+            )
+
+            guard !page.isEmpty else { break }
+            allPosts.append(contentsOf: page)
+
+            // Fewer rows than requested means we've exhausted the table.
+            if page.count < fetchLimit { break }
+            offset += page.count
+        }
+
+        return allPosts
+    }
+
+    func countPosts(authoredBy authorID: UUID) async throws -> Int {
+        try await countRows(
+            path: "posts",
+            queryItems: [
+                URLQueryItem(name: "select", value: "id"),
+                URLQueryItem(name: "author_id", value: "eq.\(authorID.uuidString.lowercased())"),
+                URLQueryItem(name: "limit", value: "1")
+            ]
+        )
+    }
+
+    /// Fetches posts where `userID` appears in `tagged_user_ids`, newest-first.
+    /// Uses PostgREST's `cs` (contains) operator on the array column.
+    func fetchTaggedPostRecords(
+        userID: UUID,
+        limit: Int,
+        createdBefore: Date? = nil
+    ) async throws -> [SupabaseFeedPostRecord] {
+        var queryItems: [URLQueryItem] = [
+            URLQueryItem(name: "select", value: SupabaseFeedPostRecord.selectList),
+            URLQueryItem(name: "tagged_user_ids", value: "cs.{\(userID.uuidString.lowercased())}"),
+            URLQueryItem(name: "order", value: "created_at.desc"),
+            URLQueryItem(name: "limit", value: "\(limit)")
+        ]
+
+        if let createdBefore {
+            queryItems.append(
+                URLQueryItem(
+                    name: "created_at",
+                    value: "lt.\(SupabaseDateCoder.iso8601Formatter.string(from: createdBefore))"
+                )
+            )
+        }
+
+        return try await sendRest(
+            path: "posts",
+            method: "GET",
+            queryItems: queryItems,
+            responseType: [SupabaseFeedPostRecord].self
+        )
+    }
+
+    /// Calls the legacy-named `tonight_feed` RPC for the Home feed. It returns
+    /// newest-first posts from the viewer and direct friends only.
     ///
     /// Throws on failure so `loadAppData` can fall back to the direct
     /// `fetchFeedPosts` query rather than silently returning an empty feed.
@@ -283,6 +775,22 @@ extension SupabaseSocialBackendClient {
                 URLQueryItem(name: "limit", value: "500")
             ],
             responseType: [SupabaseFeedCommentRecord].self
+        )
+    }
+
+    func fetchCommentLikes(for commentIDs: [UUID]) async throws -> [SupabaseCommentLikeRecord] {
+        guard !commentIDs.isEmpty else { return [] }
+        let limit = min(commentIDs.count * 20, 500)
+        return try await sendRest(
+            path: "comment_likes",
+            method: "GET",
+            queryItems: [
+                URLQueryItem(name: "select", value: SupabaseCommentLikeRecord.selectList),
+                URLQueryItem(name: "comment_id", value: "in.\(SupabaseQueryList.uuidValues(commentIDs))"),
+                URLQueryItem(name: "order", value: "created_at.desc"),
+                URLQueryItem(name: "limit", value: "\(limit)")
+            ],
+            responseType: [SupabaseCommentLikeRecord].self
         )
     }
 
@@ -357,30 +865,113 @@ extension SupabaseSocialBackendClient {
         )
     }
 
+    /// Public, low-cost runtime configuration. This intentionally does not
+    /// require an authenticated session so signed-out launches can still read
+    /// app-wide state without blocking login or account creation.
+    func fetchAppConfig() async throws -> [String: String] {
+        do {
+            let request = try makeRequest(
+                url: environment.restURL(
+                    path: "app_config",
+                    queryItems: [URLQueryItem(name: "select", value: "key,value")]
+                ),
+                method: "GET",
+                authenticated: false
+            )
+            let data = try await perform(request)
+            let records = try decode([SupabaseAppConfigRecord].self, from: data)
+            return Dictionary(uniqueKeysWithValues: records.map { ($0.key, $0.value) })
+        } catch {
+            guard Self.shouldTreatAppConfigAsMissing(error) else { throw error }
+            return [:]
+        }
+    }
+
+    private static func shouldTreatAppConfigAsMissing(_ error: Error) -> Bool {
+        guard case SupabaseBackendError.requestFailed(let message, let statusCode) = error else {
+            return false
+        }
+
+        let normalized = message.lowercased()
+        return statusCode == 404
+            && (
+                normalized.contains("app_config")
+                || normalized.contains("schema cache")
+                || normalized.contains("pgrst205")
+                || normalized.contains("could not find the table")
+            )
+    }
+
+    /// Non-critical bootstrap payload: if the migration/RPC is not deployed
+    /// yet, announcements simply stay empty instead of blocking app launch.
+    func fetchUnseenAppAnnouncementRecords(limit: Int) async throws -> [SupabaseAppAnnouncementRecord] {
+        (try? await sendRest(
+            path: "rpc/unseen_app_announcements",
+            method: "POST",
+            body: SupabaseAnnouncementLimitRequest(limit_count: limit)
+        )) ?? []
+    }
+
+    func loadUnseenAppAnnouncements(limit: Int) async throws -> [AppAnnouncement] {
+        let records = try await fetchUnseenAppAnnouncementRecords(limit: limit)
+        return records
+            .map(makeAppAnnouncement)
+            .sorted { $0.createdAt > $1.createdAt }
+    }
+
+    func makeAppAnnouncement(from record: SupabaseAppAnnouncementRecord) -> AppAnnouncement {
+        AppAnnouncement(
+            id: record.id,
+            title: record.title,
+            message: record.message,
+            imageUrl: record.image_url,
+            createdAt: record.created_at
+        )
+    }
+
+    func markAppAnnouncementSeen(id: UUID, for viewer: UserProfile) async throws {
+        try await sendRestWithoutResponse(
+            path: "rpc/mark_app_announcement_seen",
+            method: "POST",
+            body: SupabaseAnnouncementSeenRequest(announcement_id: id)
+        )
+    }
+
     /// Delta poll: fetch notifications newer than `since`, with actor profile
     /// embedded via PostgREST join so no second round-trip is needed.
     func fetchNewNotifications(since: Date) async throws -> [AppNotification] {
         let userID = try currentUserID()
-        let iso = ISO8601DateFormatter()
-        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let sinceStr = iso.string(from: since)
+        let sinceStr = SupabaseDateCoder.iso8601Formatter.string(from: since)
 
         // Embed actor profile fields inline using PostgREST resource embedding.
         // The join is notification.actor_id -> profiles.id.
-        let selectWithActor = "id,kind,title,detail,created_at,read_at,actor_id,post_id,comment_id,actor:profiles!notifications_actor_id_fkey(id,username,display_name,avatar_path,avatar_version)"
+        let selectWithActor = "id,kind,title,detail,created_at,read_at,actor_id,post_id,comment_id,night_start,night_end,night_group_id,actor:profiles!notifications_actor_id_fkey(id,username,display_name,avatar_path,avatar_version,is_verified)"
+        let legacySelectWithActor = "id,kind,title,detail,created_at,read_at,actor_id,post_id,comment_id,night_start,night_end,night_group_id,actor:profiles!notifications_actor_id_fkey(id,username,display_name,avatar_path,avatar_version)"
 
-        let records: [SupabaseNotificationWithActorRecord] = try await sendRest(
-            path: "notifications",
-            method: "GET",
-            queryItems: [
-                URLQueryItem(name: "select", value: selectWithActor),
-                URLQueryItem(name: "user_id", value: "eq.\(userID.uuidString.lowercased())"),
-                URLQueryItem(name: "created_at", value: "gte.\(sinceStr)"),
-                URLQueryItem(name: "order", value: "created_at.desc"),
-                URLQueryItem(name: "limit", value: "20")
-            ],
-            responseType: [SupabaseNotificationWithActorRecord].self
-        )
+        let baseQueryItems = [
+            URLQueryItem(name: "user_id", value: "eq.\(userID.uuidString.lowercased())"),
+            URLQueryItem(name: "created_at", value: "gte.\(sinceStr)"),
+            URLQueryItem(name: "order", value: "created_at.desc"),
+            URLQueryItem(name: "limit", value: "20")
+        ]
+
+        let records: [SupabaseNotificationWithActorRecord]
+        do {
+            records = try await sendRest(
+                path: "notifications",
+                method: "GET",
+                queryItems: [URLQueryItem(name: "select", value: selectWithActor)] + baseQueryItems,
+                responseType: [SupabaseNotificationWithActorRecord].self
+            )
+        } catch {
+            guard shouldRetryWithoutVerificationColumn(error) else { throw error }
+            records = try await sendRest(
+                path: "notifications",
+                method: "GET",
+                queryItems: [URLQueryItem(name: "select", value: legacySelectWithActor)] + baseQueryItems,
+                responseType: [SupabaseNotificationWithActorRecord].self
+            )
+        }
 
         return records.map { record in
             let actorProfile = record.actor.map { a in
@@ -401,7 +992,8 @@ extension SupabaseSocialBackendClient {
                             )
                         }
                     ),
-                    isCloseFriend: false
+                    isCloseFriend: false,
+                    isVerified: a.is_verified ?? false
                 )
             }
             return AppNotification(
@@ -413,7 +1005,8 @@ extension SupabaseSocialBackendClient {
                 isRead: record.read_at != nil,
                 actor: actorProfile,
                 postID: record.post_id,
-                commentID: record.comment_id
+                commentID: record.comment_id,
+                nightStart: record.night_start, nightEnd: record.night_end, nightGroupID: record.night_group_id
             )
         }
     }
@@ -436,7 +1029,12 @@ extension SupabaseSocialBackendClient {
         #if DEBUG
         ImageCompressor.logRatio(original: data, compressed: compressed, label: "avatar")
         #endif
-        let objectPath = "users/\(userID.uuidString.lowercased())/avatar.jpg"
+        // Use a fresh storage object for each avatar update.
+        // Storage uploads are insert-only under the current RLS policy, and
+        // profiles.avatar_version only bumps when avatar_path changes.
+        // A unique path therefore fixes both "save failed" collisions and
+        // stale-avatar caching after the update succeeds.
+        let objectPath = "users/\(userID.uuidString.lowercased())/\(UUID().uuidString.lowercased()).jpg"
         return try await uploadObject(
             data: compressed,
             bucket: environment.avatarBucket,
@@ -466,7 +1064,7 @@ extension SupabaseSocialBackendClient {
         return try await fetchCurrentProfile()?.avatar_path
     }
 
-    func uploadMomentImageIfNeeded(data: Data?, authorID: UUID) async throws -> String? {
+    func uploadMomentImageIfNeeded(data: Data?, authorID: UUID, postID: UUID) async throws -> String? {
         guard let data, !data.isEmpty else { return nil }
         // Compress to display quality before upload.
         // iPhone photos can be 6–12 MB; 1080 px / 0.80 JPEG ≈ 150–350 KB.
@@ -477,13 +1075,20 @@ extension SupabaseSocialBackendClient {
         ImageCompressor.logRatio(original: data, compressed: compressed, label: "moment")
         ImageCompressor.assertAspectRatioPreserved(original: data, compressed: compressed, label: "moment")
         #endif
-        let objectPath = "posts/\(authorID.uuidString.lowercased())/\(UUID().uuidString.lowercased()).jpg"
-        return try await uploadObject(
-            data: compressed,
-            bucket: environment.storageBucket,
-            objectPath: objectPath,
-            contentType: "image/jpeg"
-        )
+        // Identical retries reuse one immutable object. A changed photo gets a
+        // different path, so it can never overwrite an already-published image.
+        let digest = SHA256.hash(data: compressed).map { String(format: "%02x", $0) }.joined()
+        let objectPath = "posts/\(authorID.uuidString.lowercased())/\(postID.uuidString.lowercased())-\(digest).jpg"
+        do {
+            return try await uploadObject(data: compressed, bucket: environment.storageBucket,
+                objectPath: objectPath, contentType: "image/jpeg")
+        } catch SupabaseBackendError.requestFailed(let message, let statusCode)
+            where (statusCode == 409 || statusCode == 400)
+                && (message.localizedCaseInsensitiveContains("already exists")
+                    || message.localizedCaseInsensitiveContains("duplicate")) {
+            // Storage committed the previous upload but its response was lost.
+            return objectPath
+        }
     }
 
     func uploadCommentImageIfNeeded(data: Data?, authorID: UUID) async throws -> String? {
@@ -515,12 +1120,55 @@ extension SupabaseSocialBackendClient {
         }
     }
 
+    /// Extracts the raw object path (e.g. `posts/user-id/image.jpg`) from a
+    /// Supabase public storage URL. The URL structure is:
+    ///   `.../storage/v1/object/public/<bucket>/<objectPath>`
+    /// Returns nil if the URL doesn't match any known bucket, so the caller
+    /// can skip the storage delete safely.
+    func extractStoragePath(from url: URL) -> String? {
+        let pathComponents = url.pathComponents
+        // Find the bucket segment — everything after it is the objectPath.
+        let buckets = [environment.storageBucket, environment.avatarBucket]
+        for bucket in buckets {
+            if let bucketIndex = pathComponents.firstIndex(of: bucket) {
+                let objectSegments = pathComponents.dropFirst(bucketIndex + 1)
+                let objectPath = objectSegments.joined(separator: "/")
+                return objectPath.isEmpty ? nil : objectPath
+            }
+        }
+        return nil
+    }
+
+    /// Deletes a single object from Supabase Storage. Best-effort: a failure
+    /// is logged in DEBUG builds but does not throw — the DB row is already
+    /// gone at the call site and a storage orphan is preferable to surfacing
+    /// a confusing error to the user.
+    func deleteObject(bucket: String, objectPath: String) async {
+        guard !objectPath.isEmpty else { return }
+        do {
+            try await ensureAuthenticatedSession()
+            var request = try makeRequest(
+                url: environment.storageObjectURL(bucket: bucket, objectPath: objectPath),
+                method: "DELETE",
+                authenticated: true,
+                timeoutInterval: 30
+            )
+            request.setValue("return=minimal", forHTTPHeaderField: "Prefer")
+            _ = try await perform(request)
+        } catch {
+            #if DEBUG
+            print("[Storage] deleteObject failed for \(bucket)/\(objectPath): \(error)")
+            #endif
+        }
+    }
+
     func uploadObject(
         data: Data,
         bucket: String,
         objectPath: String,
         contentType: String
     ) async throws -> String {
+        try await ensureAuthenticatedSession()
         var request = try makeRequest(
             url: environment.storageObjectURL(bucket: bucket, objectPath: objectPath),
             method: "POST",
@@ -687,6 +1335,14 @@ extension SupabaseSocialBackendClient {
     }
 
     func perform(_ request: URLRequest, source: String = #function) async throws -> Data {
+        let (data, _) = try await performWithResponse(request, source: source)
+        return data
+    }
+
+    func performWithResponse(
+        _ request: URLRequest,
+        source: String = #function
+    ) async throws -> (Data, HTTPURLResponse) {
         let start = Date()
         let (data, response): (Data, URLResponse)
 
@@ -720,7 +1376,30 @@ extension SupabaseSocialBackendClient {
             throw decodeErrorResponse(from: data, statusCode: httpResponse.statusCode)
         }
 
-        return data
+        return (data, httpResponse)
+    }
+
+    func countRows(path: String, queryItems: [URLQueryItem]) async throws -> Int {
+        try await ensureAuthenticatedSession()
+        var request = try makeRequest(
+            url: environment.restURL(path: path, queryItems: queryItems),
+            method: "GET",
+            authenticated: true
+        )
+        request.setValue("count=exact", forHTTPHeaderField: "Prefer")
+
+        let (data, response) = try await performWithResponse(request)
+        if let contentRange = response.value(forHTTPHeaderField: "Content-Range"),
+           let totalComponent = contentRange.split(separator: "/").last,
+           let total = Int(totalComponent) {
+            return total
+        }
+
+        if let decoded = try? JSONSerialization.jsonObject(with: data) as? [Any] {
+            return decoded.count
+        }
+
+        throw SupabaseBackendError.invalidResponse
     }
 
     func encode<Body: Encodable>(_ body: Body) throws -> Data {
@@ -778,6 +1457,51 @@ extension SupabaseSocialBackendClient {
         return .requestFailed("Request failed.", statusCode: statusCode)
     }
 
+    func shouldRetryWithoutVerificationColumn(_ error: Error) -> Bool {
+        guard case SupabaseBackendError.requestFailed(let message, _) = error else { return false }
+        return message.localizedCaseInsensitiveContains("is_verified")
+    }
+
+    func profileQueryItemsAfterMissingColumn(_ error: Error, from queryItems: [URLQueryItem]) -> [URLQueryItem]? {
+        guard case SupabaseBackendError.requestFailed(let message, _) = error else { return nil }
+        let missingThemeColumn = message.localizedCaseInsensitiveContains("background_theme")
+        let missingVerificationColumn = message.localizedCaseInsensitiveContains("is_verified")
+        guard missingThemeColumn || missingVerificationColumn else { return nil }
+
+        var didReplace = false
+        let fallback = queryItems.map { item in
+            guard item.name == "select" else { return item }
+
+            if missingThemeColumn, item.value == SupabaseProfileRecord.selectList {
+                didReplace = true
+                return URLQueryItem(name: item.name, value: SupabaseProfileRecord.verifiedSelectList)
+            }
+
+            if missingThemeColumn, item.value == SupabaseProfileRecord.viewerSelectList {
+                didReplace = true
+                return URLQueryItem(name: item.name, value: SupabaseProfileRecord.viewerVerifiedSelectList)
+            }
+
+            if missingVerificationColumn,
+               item.value == SupabaseProfileRecord.selectList
+                || item.value == SupabaseProfileRecord.verifiedSelectList {
+                didReplace = true
+                return URLQueryItem(name: item.name, value: SupabaseProfileRecord.legacySelectList)
+            }
+
+            if missingVerificationColumn,
+               item.value == SupabaseProfileRecord.viewerSelectList
+                || item.value == SupabaseProfileRecord.viewerVerifiedSelectList {
+                didReplace = true
+                return URLQueryItem(name: item.name, value: SupabaseProfileRecord.viewerLegacySelectList)
+            }
+
+            return item
+        }
+
+        return didReplace ? fallback : nil
+    }
+
     func makeUserProfile(
         from profile: SupabaseProfileRecord,
         preferredImageData: Data?,
@@ -800,7 +1524,10 @@ extension SupabaseSocialBackendClient {
                 avatarPath: profile.avatar_path,
                 avatarVersion: profile.avatar_version
             ),
-            isCloseFriend: isCloseFriend
+            backgroundTheme: profile.background_theme.flatMap(BackgroundTheme.init(rawValue:)),
+            isCloseFriend: isCloseFriend,
+            isVerified: profile.is_verified ?? false,
+            isBanned: profile.is_banned ?? false
         )
     }
 
@@ -905,12 +1632,13 @@ extension SupabaseSocialBackendClient {
         return MomentPost(
             id: record.id,
             author: author,
-            drink: DrinkTag(
+            drink: record.drink_name.isEmpty ? nil : DrinkTag(
                 id: stableUUID(seed: "drink|\(record.drink_name)|\(record.drink_subtitle)|\(record.drink_symbol)"),
                 name: record.drink_name,
                 subtitle: record.drink_subtitle,
                 symbol: record.drink_symbol,
                 imageName: DrinkTag.resolvedImageName(for: record.drink_name),
+                emoji: DrinkTag.resolvedEmoji(for: record.drink_name),
                 primaryHex: record.drink_primary_hex,
                 secondaryHex: record.drink_secondary_hex
             ),
@@ -929,7 +1657,8 @@ extension SupabaseSocialBackendClient {
             fullyLoadedReactionKinds: fullyLoadedReactionKinds,
             presenceNote: taggedFriends.isEmpty ? nil : "\(taggedFriends.first?.displayName ?? "Friends") is in the post",
             connectionPath: nil,
-            contextReason: venue == nil ? "Live right now" : "Checked in"
+            contextReason: venue == nil ? "Live right now" : "Checked in",
+            isSharedLocally: record.is_shared_locally
         )
     }
 
@@ -946,7 +1675,8 @@ extension SupabaseSocialBackendClient {
             isRead: record.read_at != nil,
             actor: record.actor_id.flatMap { profileMap[$0] },
             postID: record.post_id,
-            commentID: record.comment_id
+            commentID: record.comment_id,
+            nightStart: record.night_start, nightEnd: record.night_end, nightGroupID: record.night_group_id
         )
     }
 
@@ -956,6 +1686,8 @@ extension SupabaseSocialBackendClient {
             session.expires_at = Date().addingTimeInterval(TimeInterval(expiresIn)).timeIntervalSince1970
         }
 
+        authSessionGeneration += 1
+        authRefreshTask = nil
         authSession = session
 
         guard let data = try? JSONEncoder().encode(session) else { return }
@@ -963,19 +1695,20 @@ extension SupabaseSocialBackendClient {
         // Write on the main thread to avoid a race where the app is suspended
         // mid-write from a background Task, which can corrupt the UserDefaults
         // plist and cause loadStoredSession() to return nil on the next launch.
-        // Also synchronize() immediately so the OS flushes to disk before a
-        // possible force-quit — without this, in-memory changes can be lost.
+        // iOS flushes UserDefaults to disk autonomously within ~100ms — the old
+        // explicit synchronize() call (deprecated since iOS 12) forced a blocking
+        // disk write on the main thread for no real durability benefit.
         DispatchQueue.main.async {
             UserDefaults.standard.set(data, forKey: SessionStorage.key)
-            UserDefaults.standard.synchronize()
         }
     }
 
     func clearSession() {
+        authSessionGeneration += 1
         authSession = nil
+        authRefreshTask = nil
         DispatchQueue.main.async {
             UserDefaults.standard.removeObject(forKey: SessionStorage.key)
-            UserDefaults.standard.synchronize()
         }
     }
 

@@ -2,10 +2,16 @@
 import Observation
 import SwiftUI
 import UIKit
+import OSLog
 
 @MainActor
 @Observable
 final class CameraPipeline: NSObject, AVCapturePhotoCaptureDelegate {
+    private final class SessionLifecycleState: @unchecked Sendable {
+        var activePresentationID: UUID?
+        var subjectPreviewEnabled = false
+    }
+
     enum SetupState: Equatable {
         case idle
         case preparing
@@ -17,12 +23,81 @@ final class CameraPipeline: NSObject, AVCapturePhotoCaptureDelegate {
     var setupState: SetupState = .idle
     var capturedPhotoData: Data?
     var isCapturing = false
-    var lensMode: CameraCaptureMode = .back
+    @ObservationIgnored var captureRotationAngle: CGFloat = 0
+    @ObservationIgnored var capturePreviewSize: CGSize?
+    @ObservationIgnored nonisolated private let captureFramings = CaptureFramings()
 
-    @ObservationIgnored let session = AVCaptureSession()
+    /// The JPEG callback can arrive after a fold or rotation. Keep the framing
+    /// that was visible at the shutter, keyed to AVFoundation's capture ID.
+    nonisolated private final class CaptureFramings: @unchecked Sendable {
+        private let lock = NSLock()
+        nonisolated struct Framing: Sendable {
+            let previewSize: CGSize?
+            let optimizedForDuo: Bool
+        }
+        private var framings: [Int64: Framing] = [:]
+
+        func record(_ size: CGSize?, optimizedForDuo: Bool, for id: Int64) {
+            lock.lock()
+            defer { lock.unlock() }
+            framings[id] = Framing(previewSize: size, optimizedForDuo: optimizedForDuo)
+        }
+
+        func take(_ id: Int64) -> Framing? {
+            lock.lock()
+            defer { lock.unlock() }
+            return framings.removeValue(forKey: id)
+        }
+    }
+    var lensMode: CameraCaptureMode = .back
+    var flashMode: AVCaptureDevice.FlashMode = .off
+
+    /// Cycles off → on → off. Auto is intentionally skipped for predictability.
+    func toggleFlash() {
+        flashMode = flashMode == .off ? .on : .off
+    }
+
+    /// True when flash is available — rear camera only, and only when supported
+    /// by the current device input.
+    var isFlashAvailable: Bool {
+        lensMode.isRear && photoOutput.supportedFlashModes.contains(.on)
+    }
+
+    @ObservationIgnored private(set) var session = AVCaptureSession()
+    private(set) var supportsSubjectPreview = false
+    // The main camera owns the only capture preview connection. The outside
+    // display consumes video buffers from that same single-camera session.
+    @ObservationIgnored let primaryPreviewLayer = AVCaptureVideoPreviewLayer()
+    @ObservationIgnored let subjectPreview = CameraSubjectFrameRenderer(displayLayer: AVSampleBufferDisplayLayer())
+    private(set) var activeDevice: AVCaptureDevice?
+    @ObservationIgnored private let subjectOutput = AVCaptureVideoDataOutput()
     @ObservationIgnored private let photoOutput = AVCapturePhotoOutput()
     @ObservationIgnored private let sessionQueue = DispatchQueue(label: "outagain.camera.session")
+    @ObservationIgnored private let lifecycleState = SessionLifecycleState()
     @ObservationIgnored private var isConfigured = false
+
+    @discardableResult
+    func beginPresentation(id: UUID = UUID()) -> UUID {
+        let lifecycleState = lifecycleState
+        sessionQueue.async {
+            lifecycleState.activePresentationID = id
+        }
+        return id
+    }
+
+    func endPresentation(id: UUID) {
+        let session = session
+        let subjectPreview = subjectPreview
+        let lifecycleState = lifecycleState
+        sessionQueue.async {
+            guard lifecycleState.activePresentationID == id else { return }
+            lifecycleState.activePresentationID = nil
+            lifecycleState.subjectPreviewEnabled = false
+            if session.isRunning { session.stopRunning() }
+            // Clear after capture stops, including any final queued frame.
+            subjectPreview.setEnabled(false, clearFrame: true)
+        }
+    }
 
     var dualCaptureSupported: Bool {
         canSwitchLens
@@ -37,11 +112,12 @@ final class CameraPipeline: NSObject, AVCapturePhotoCaptureDelegate {
         Self.ultraWideDevice() != nil
     }
 
-    func prepare() async {
-        guard setupState == .idle else {
+    func prepare(supportsSubjectPreview: Bool = false) async {
+        if setupState == .ready {
             await startSessionIfNeeded()
             return
         }
+        guard setupState != .preparing else { return }
 
         setupState = .preparing
 
@@ -64,28 +140,54 @@ final class CameraPipeline: NSObject, AVCapturePhotoCaptureDelegate {
         }
 
         do {
-            try await configureSession()
+            try await configureSession(supportsSubjectPreview: supportsSubjectPreview)
             setupState = .ready
             await startSessionIfNeeded()
         } catch {
+            Logger(subsystem: "com.cristian.OutAgain", category: "Camera").error("Camera setup failed: \(error.localizedDescription, privacy: .public)")
             setupState = .failed(error.localizedDescription)
         }
+    }
+
+    nonisolated static func makeCaptureSession(supportsSubjectPreview: Bool) -> AVCaptureSession {
+        // Two displays show one camera. MultiCam is unnecessary and can reject
+        // the second connection, preventing even the main camera from opening.
+        return AVCaptureSession()
     }
 
     func startSessionIfNeeded() async {
         guard setupState == .ready else { return }
         let session = session
+        let lifecycleState = lifecycleState
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            sessionQueue.async {
+                defer { continuation.resume() }
+                // An outstanding prepare can finish after the camera was closed.
+                guard lifecycleState.activePresentationID != nil, !session.isRunning else { return }
+                session.startRunning()
+            }
+        }
+    }
+
+    func setSubjectPreviewEnabled(_ enabled: Bool, presentationID: UUID) {
+        let subjectPreview = subjectPreview
+        let lifecycleState = lifecycleState
         sessionQueue.async {
-            guard !session.isRunning else { return }
-            session.startRunning()
+            guard lifecycleState.activePresentationID == presentationID else { return }
+            lifecycleState.subjectPreviewEnabled = enabled
+            subjectPreview.setEnabled(enabled)
         }
     }
 
     func stopSession() {
         let session = session
+        let subjectPreview = subjectPreview
+        let lifecycleState = lifecycleState
         sessionQueue.async {
-            guard session.isRunning else { return }
-            session.stopRunning()
+            lifecycleState.activePresentationID = nil
+            lifecycleState.subjectPreviewEnabled = false
+            if session.isRunning { session.stopRunning() }
+            subjectPreview.setEnabled(false, clearFrame: true)
         }
     }
 
@@ -108,24 +210,39 @@ final class CameraPipeline: NSObject, AVCapturePhotoCaptureDelegate {
         do {
             try await configureCameraInput(for: lens)
             lensMode = lens
+            // Flash is rear-only — reset when switching to front.
+            if !lens.isRear { flashMode = .off }
             await startSessionIfNeeded()
         } catch {
             setupState = .failed(error.localizedDescription)
         }
     }
 
-    func capturePhoto() {
-        guard setupState == .ready else { return }
+    func capturePhoto(optimizedForDuo: Bool = false) {
+        guard setupState == .ready, !isCapturing else { return }
 
         isCapturing = true
         let settings = AVCapturePhotoSettings()
-        settings.photoQualityPrioritization = .quality
+        settings.isHighResolutionPhotoEnabled = false
+        if photoOutput.isStillImageStabilizationSupported {
+            settings.isAutoStillImageStabilizationEnabled = false
+        }
+
+        // Apply the current flash mode when flash is supported.
+        if photoOutput.supportedFlashModes.contains(flashMode) {
+            settings.flashMode = flashMode
+        }
 
         if let connection = photoOutput.connection(with: .video), connection.isVideoMirroringSupported {
             connection.automaticallyAdjustsVideoMirroring = false
             connection.isVideoMirrored = lensMode == .front
         }
+        if optimizedForDuo, let connection = photoOutput.connection(with: .video),
+           connection.isVideoRotationAngleSupported(captureRotationAngle) {
+            connection.videoRotationAngle = captureRotationAngle
+        }
 
+        captureFramings.record(capturePreviewSize, optimizedForDuo: optimizedForDuo, for: settings.uniqueID)
         photoOutput.capturePhoto(with: settings, delegate: self)
     }
 
@@ -133,31 +250,59 @@ final class CameraPipeline: NSObject, AVCapturePhotoCaptureDelegate {
         capturedPhotoData = nil
     }
 
-    func photoOutput(
+    /// AVFoundation invokes this off the main thread; keep `fileDataRepresentation()`
+    /// here so JPEG packaging does not block the UI thread (that was adding noticeable
+    /// delay before the confirm-photo screen could appear).
+    nonisolated func photoOutput(
         _ output: AVCapturePhotoOutput,
         didFinishProcessingPhoto photo: AVCapturePhoto,
         error: Error?
     ) {
-        Task { @MainActor in
-            defer { isCapturing = false }
-
-            if let error {
-                setupState = .failed(error.localizedDescription)
-                return
+        let framing = captureFramings.take(photo.resolvedSettings.uniqueID)
+        if let error {
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                defer { self.isCapturing = false }
+                self.setupState = .failed(error.localizedDescription)
             }
+            return
+        }
 
-            capturedPhotoData = photo.fileDataRepresentation()
+        // Ordinary phones retain their original capture bytes and framing.
+        // The Duo guide is opt-in and frozen at the instant of the shutter.
+        let data = photo.fileDataRepresentation().flatMap { originalData in
+            if framing?.optimizedForDuo == true {
+                return ImageCompressor.postCapture(from: originalData, previewSize: framing?.previewSize)
+            }
+            return originalData
+        }
+        guard let data else {
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                defer { self.isCapturing = false }
+                self.setupState = .failed("Couldn't read photo data.")
+            }
+            return
+        }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.isCapturing = false }
+            self.capturedPhotoData = data
         }
     }
 
-    private func configureSession() async throws {
+    private func configureSession(supportsSubjectPreview: Bool) async throws {
         guard !isConfigured else { return }
-        let session = session
         let photoOutput = photoOutput
+        let primaryPreviewLayer = primaryPreviewLayer
+        let subjectOutput = subjectOutput
+        let subjectPreview = subjectPreview
         let initialLens = lensMode
 
-        try await withCheckedThrowingContinuation { continuation in
+        let configuredSession: AVCaptureSession = try await withCheckedThrowingContinuation { continuation in
             sessionQueue.async {
+                let session = Self.makeCaptureSession(supportsSubjectPreview: supportsSubjectPreview)
                 do {
                     session.beginConfiguration()
                     session.sessionPreset = .photo
@@ -169,7 +314,52 @@ final class CameraPipeline: NSObject, AVCapturePhotoCaptureDelegate {
                     }
 
                     session.addOutput(photoOutput)
-                    photoOutput.maxPhotoQualityPrioritization = .quality
+                    photoOutput.isHighResolutionCaptureEnabled = false
+                    primaryPreviewLayer.session = session
+                    if supportsSubjectPreview && session.canAddOutput(subjectOutput) {
+                        subjectOutput.alwaysDiscardsLateVideoFrames = true
+                        subjectOutput.automaticallyConfiguresOutputBufferDimensions = false
+                        subjectOutput.deliversPreviewSizedOutputBuffers = true
+                        subjectOutput.setSampleBufferDelegate(subjectPreview, queue: subjectPreview.queue)
+                        session.addOutput(subjectOutput)
+                        Self.configureSubjectConnection(subjectOutput)
+                    }
+                    session.commitConfiguration()
+                    continuation.resume(returning: session)
+                } catch {
+                    // Failed setup must release the shared outputs before a
+                    // retry, rather than leaving them attached to a dead session.
+                    primaryPreviewLayer.session = nil
+                    session.outputs.forEach(session.removeOutput)
+                    session.inputs.forEach(session.removeInput)
+                    session.commitConfiguration()
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+
+        session = configuredSession
+        activeDevice = (configuredSession.inputs.first as? AVCaptureDeviceInput)?.device
+        self.supportsSubjectPreview = configuredSession.outputs.contains { $0 === subjectOutput }
+        isConfigured = true
+    }
+
+    private func configureCameraInput(for lens: CameraCaptureMode) async throws {
+        let session = session
+        let primaryPreviewLayer = primaryPreviewLayer
+        let subjectPreview = subjectPreview
+        let subjectOutput = subjectOutput
+        let lifecycleState = lifecycleState
+
+        try await withCheckedThrowingContinuation { continuation in
+            sessionQueue.async {
+                do {
+                    session.beginConfiguration()
+                    try Self.replaceVideoInput(on: session, with: lens)
+                    if !lens.isRear { lifecycleState.subjectPreviewEnabled = false }
+                    if primaryPreviewLayer.session !== session { primaryPreviewLayer.session = session }
+                    Self.configureSubjectConnection(subjectOutput)
+                    subjectPreview.setEnabled(lifecycleState.subjectPreviewEnabled, clearFrame: true)
                     session.commitConfiguration()
                     continuation.resume()
                 } catch {
@@ -178,25 +368,16 @@ final class CameraPipeline: NSObject, AVCapturePhotoCaptureDelegate {
                 }
             }
         }
-
-        isConfigured = true
+        activeDevice = (session.inputs.first as? AVCaptureDeviceInput)?.device
     }
 
-    private func configureCameraInput(for lens: CameraCaptureMode) async throws {
-        let session = session
-
-        try await withCheckedThrowingContinuation { continuation in
-            sessionQueue.async {
-                do {
-                    session.beginConfiguration()
-                    try Self.replaceVideoInput(on: session, with: lens)
-                    session.commitConfiguration()
-                    continuation.resume()
-                } catch {
-                    session.commitConfiguration()
-                    continuation.resume(throwing: error)
-                }
-            }
+    nonisolated private static func configureSubjectConnection(_ output: AVCaptureVideoDataOutput) {
+        guard let connection = output.connection(with: .video) else { return }
+        // The accessory applies its own rotation and horizontal reflection.
+        if connection.isVideoRotationAngleSupported(0) { connection.videoRotationAngle = 0 }
+        if connection.isVideoMirroringSupported {
+            connection.automaticallyAdjustsVideoMirroring = false
+            connection.isVideoMirrored = false
         }
     }
 
@@ -214,7 +395,13 @@ final class CameraPipeline: NSObject, AVCapturePhotoCaptureDelegate {
             throw CameraError.noCameraHardware
         }
 
-        let input = try AVCaptureDeviceInput(device: device)
+        let input: AVCaptureDeviceInput
+        do {
+            input = try AVCaptureDeviceInput(device: device)
+        } catch {
+            previousInputs.forEach { if session.canAddInput($0) { session.addInput($0) } }
+            throw error
+        }
         guard session.canAddInput(input) else {
             previousInputs.forEach { previousInput in
                 if session.canAddInput(previousInput) { session.addInput(previousInput) }
@@ -272,35 +459,117 @@ final class CameraPipeline: NSObject, AVCapturePhotoCaptureDelegate {
 }
 
 struct CameraPreviewView: UIViewRepresentable {
-    let session: AVCaptureSession
+    let previewLayer: AVCaptureVideoPreviewLayer
     let isMirrored: Bool
+    var adaptsToDuoOrientation = false
+    var onCaptureRotationChanged: (CGFloat) -> Void = { _ in }
 
     func makeUIView(context: Context) -> PreviewContainerView {
-        let view = PreviewContainerView()
-        view.previewLayer.session = session
-        view.previewLayer.videoGravity = .resizeAspectFill
-        configureMirroring(on: view.previewLayer)
+        let view = PreviewContainerView(previewLayer: previewLayer)
+        view.configure(isMirrored: isMirrored, adaptsToDuoOrientation: adaptsToDuoOrientation, onCaptureRotationChanged: onCaptureRotationChanged)
         return view
     }
 
     func updateUIView(_ uiView: PreviewContainerView, context: Context) {
-        uiView.previewLayer.session = session
-        configureMirroring(on: uiView.previewLayer)
+        uiView.configure(isMirrored: isMirrored, adaptsToDuoOrientation: adaptsToDuoOrientation, onCaptureRotationChanged: onCaptureRotationChanged)
     }
 
-    private func configureMirroring(on layer: AVCaptureVideoPreviewLayer) {
-        guard let connection = layer.connection, connection.isVideoMirroringSupported else { return }
-        connection.automaticallyAdjustsVideoMirroring = false
-        connection.isVideoMirrored = isMirrored
+    static func dismantleUIView(_ uiView: PreviewContainerView, coordinator: ()) {
+        uiView.detachPreview()
     }
 }
 
 final class PreviewContainerView: UIView {
-    override class var layerClass: AnyClass {
-        AVCaptureVideoPreviewLayer.self
+    let previewLayer: AVCaptureVideoPreviewLayer
+    private var rotationCoordinator: AVCaptureDevice.RotationCoordinator?
+    private var previewRotationObservation: NSKeyValueObservation?
+    private var captureRotationObservation: NSKeyValueObservation?
+    private var deviceID: String?
+    private var adaptsToDuoOrientation = false
+    private var onCaptureRotationChanged: (CGFloat) -> Void = { _ in }
+
+    init(previewLayer: AVCaptureVideoPreviewLayer) {
+        self.previewLayer = previewLayer
+        super.init(frame: .zero)
+        backgroundColor = .black
+        clipsToBounds = true
+        layer.addSublayer(previewLayer)
     }
 
-    var previewLayer: AVCaptureVideoPreviewLayer {
-        layer as! AVCaptureVideoPreviewLayer
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func configure(isMirrored: Bool, adaptsToDuoOrientation: Bool, onCaptureRotationChanged: @escaping (CGFloat) -> Void) {
+        self.onCaptureRotationChanged = onCaptureRotationChanged
+        self.adaptsToDuoOrientation = adaptsToDuoOrientation
+        if !adaptsToDuoOrientation { clearRotationCoordinator() }
+        // The session owns the connection. A SwiftUI layout update only updates
+        // display properties, and never attaches another layer to the session.
+        previewLayer.videoGravity = .resizeAspectFill
+        if let connection = previewLayer.connection, connection.isVideoMirroringSupported {
+            if connection.automaticallyAdjustsVideoMirroring {
+                connection.automaticallyAdjustsVideoMirroring = false
+            }
+            if connection.isVideoMirrored != isMirrored {
+                connection.isVideoMirrored = isMirrored
+            }
+        }
+        updateRotationCoordinator()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard previewLayer.superlayer === layer else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        previewLayer.frame = bounds
+        CATransaction.commit()
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil { clearRotationCoordinator() }
+        else { updateRotationCoordinator(force: true) }
+    }
+
+    func detachPreview() {
+        clearRotationCoordinator()
+        // During rotation the replacement view may already own this layer.
+        // The departing view must not remove it from its new host.
+        if previewLayer.superlayer === layer { previewLayer.removeFromSuperlayer() }
+    }
+
+    private func clearRotationCoordinator() {
+        previewRotationObservation = nil
+        captureRotationObservation = nil
+        rotationCoordinator = nil
+        deviceID = nil
+    }
+
+    private func updateRotationCoordinator(force: Bool = false) {
+        guard adaptsToDuoOrientation, window != nil, previewLayer.superlayer === layer else { return }
+        guard let device = (previewLayer.session?.inputs.first as? AVCaptureDeviceInput)?.device else { return }
+        guard force || deviceID != device.uniqueID else { return }
+        deviceID = device.uniqueID
+        let coordinator = AVCaptureDevice.RotationCoordinator(device: device, previewLayer: previewLayer)
+        rotationCoordinator = coordinator
+        onCaptureRotationChanged(coordinator.videoRotationAngleForHorizonLevelCapture)
+        previewRotationObservation = coordinator.observe(\.videoRotationAngleForHorizonLevelPreview, options: [.initial, .new]) { [weak self] coordinator, _ in
+            let angle = coordinator.videoRotationAngleForHorizonLevelPreview
+            Task { @MainActor [weak self] in
+                guard let self, self.rotationCoordinator === coordinator,
+                      self.previewLayer.superlayer === self.layer,
+                      let connection = self.previewLayer.connection,
+                      connection.isVideoRotationAngleSupported(angle) else { return }
+                if connection.videoRotationAngle != angle { connection.videoRotationAngle = angle }
+            }
+        }
+        captureRotationObservation = coordinator.observe(\.videoRotationAngleForHorizonLevelCapture, options: [.initial, .new]) { [weak self] coordinator, _ in
+            let angle = coordinator.videoRotationAngleForHorizonLevelCapture
+            Task { @MainActor [weak self] in
+                guard let self, self.rotationCoordinator === coordinator,
+                      self.previewLayer.superlayer === self.layer else { return }
+                self.onCaptureRotationChanged(angle)
+            }
+        }
     }
 }

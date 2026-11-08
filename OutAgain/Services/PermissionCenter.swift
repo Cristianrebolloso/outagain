@@ -1,6 +1,4 @@
-import Contacts
 import CoreLocation
-import CryptoKit
 import Observation
 import UIKit
 import UserNotifications
@@ -13,7 +11,6 @@ final class PermissionCenter: NSObject, CLLocationManagerDelegate {
         var authorizationStatus: CLAuthorizationStatus
     }
 
-    var contactsStatus: PermissionState
     var locationStatus: PermissionState
     var notificationsStatus: PermissionState
     var currentLocation: CLLocation?
@@ -28,7 +25,6 @@ final class PermissionCenter: NSObject, CLLocationManagerDelegate {
         return LocationSnapshot(location: currentLocation)
     }
 
-    @ObservationIgnored private let contactStore = CNContactStore()
     @ObservationIgnored private let locationManager = CLLocationManager()
     @ObservationIgnored private let notificationCenter = UNUserNotificationCenter.current()
     @ObservationIgnored private var isRefreshingLocationAuthorization = false
@@ -44,7 +40,6 @@ final class PermissionCenter: NSObject, CLLocationManagerDelegate {
     @ObservationIgnored private static let localityRefetchDistance: CLLocationDistance = 250
 
     override init() {
-        contactsStatus = PermissionCenter.mapContactsStatus(CNContactStore.authorizationStatus(for: .contacts))
         locationStatus = .notDetermined
         notificationsStatus = .notDetermined
         currentLocation = nil
@@ -64,16 +59,9 @@ final class PermissionCenter: NSObject, CLLocationManagerDelegate {
         }
     }
 
-    func requestContacts() async {
-        guard contactsStatus == .notDetermined else { return }
-
-        let granted = await withCheckedContinuation { continuation in
-            contactStore.requestAccess(for: .contacts) { granted, _ in
-                continuation.resume(returning: granted)
-            }
-        }
-
-        contactsStatus = granted ? .granted : .denied
+    func openSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
     }
 
     func requestLocation() {
@@ -107,55 +95,6 @@ final class PermissionCenter: NSObject, CLLocationManagerDelegate {
         if notificationsStatus == .granted {
             UIApplication.shared.registerForRemoteNotifications()
         }
-    }
-
-    func contactLookupSeeds(limit: Int = 250) async -> [ContactLookupSeed] {
-        guard contactsStatus == .granted else { return [] }
-
-        return await Task.detached(priority: .userInitiated) {
-            let store = CNContactStore()
-            let keys: [CNKeyDescriptor] = [
-                CNContactGivenNameKey as CNKeyDescriptor,
-                CNContactFamilyNameKey as CNKeyDescriptor,
-                CNContactEmailAddressesKey as CNKeyDescriptor,
-                CNContactPhoneNumbersKey as CNKeyDescriptor
-            ]
-            let request = CNContactFetchRequest(keysToFetch: keys)
-            var discovered: [ContactLookupSeed] = []
-            var seen = Set<String>()
-
-            try? store.enumerateContacts(with: request) { contact, stop in
-                let emailHashes = Set(contact.emailAddresses.compactMap {
-                    Self.normalizedEmailHash(for: String($0.value))
-                })
-                let phoneHashes = Set(contact.phoneNumbers.compactMap {
-                    Self.normalizedPhoneHash(for: $0.value.stringValue)
-                })
-
-                guard !emailHashes.isEmpty || !phoneHashes.isEmpty else { return }
-
-                let fingerprint = Array(emailHashes.union(phoneHashes)).sorted().joined(separator: "|")
-                guard seen.insert(fingerprint).inserted else { return }
-
-                let displayName = [contact.givenName, contact.familyName]
-                    .joined(separator: " ")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-
-                discovered.append(
-                    ContactLookupSeed(
-                        displayName: displayName.isEmpty ? "Contact" : displayName,
-                        emailHashes: Array(emailHashes).sorted(),
-                        phoneHashes: Array(phoneHashes).sorted()
-                    )
-                )
-
-                if discovered.count >= limit {
-                    stop.pointee = true
-                }
-            }
-
-            return discovered
-        }.value
     }
 
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
@@ -314,19 +253,6 @@ final class PermissionCenter: NSObject, CLLocationManagerDelegate {
         }.value
     }
 
-    private static func mapContactsStatus(_ status: CNAuthorizationStatus) -> PermissionState {
-        switch status {
-        case .authorized, .limited:
-            .granted
-        case .denied, .restricted:
-            .denied
-        case .notDetermined:
-            .notDetermined
-        @unknown default:
-            .denied
-        }
-    }
-
     private static func mapLocationStatus(_ status: CLAuthorizationStatus) -> PermissionState {
         switch status {
         case .authorizedAlways, .authorizedWhenInUse:
@@ -353,22 +279,4 @@ final class PermissionCenter: NSObject, CLLocationManagerDelegate {
         }
     }
 
-    nonisolated private static func normalizedEmailHash(for rawValue: String) -> String? {
-        let normalized = rawValue
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        guard normalized.contains("@") else { return nil }
-        return sha256(normalized)
-    }
-
-    nonisolated private static func normalizedPhoneHash(for rawValue: String) -> String? {
-        let normalized = rawValue.filter(\.isNumber)
-        guard normalized.count >= 7 else { return nil }
-        return sha256(normalized)
-    }
-
-    nonisolated private static func sha256(_ input: String) -> String {
-        let digest = SHA256.hash(data: Data(input.utf8))
-        return digest.map { String(format: "%02x", $0) }.joined()
-    }
 }

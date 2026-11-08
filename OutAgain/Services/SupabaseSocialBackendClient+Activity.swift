@@ -1,20 +1,82 @@
 import Foundation
 
 extension SupabaseSocialBackendClient {
+    private static let commentMentionRegex = try! NSRegularExpression(
+        pattern: #"(?<![A-Za-z0-9_])@([A-Za-z0-9_]{3,20})"#,
+        options: []
+    )
+
+    private static func mentionedUsernames(in text: String) -> [String] {
+        let nsRange = NSRange(text.startIndex..., in: text)
+        let matches = commentMentionRegex.matches(in: text, options: [], range: nsRange)
+
+        var usernames: [String] = []
+        var seen = Set<String>()
+
+        for match in matches {
+            guard match.numberOfRanges > 1,
+                  let range = Range(match.range(at: 1), in: text)
+            else { continue }
+
+            let normalized = UsernameRules.normalized(String(text[range]))
+            guard UsernameRules.isValid(normalized), seen.insert(normalized).inserted else { continue }
+            usernames.append(normalized)
+        }
+
+        return usernames
+    }
+
+    private func resolveMentionedUserIDs(in text: String, excluding actorID: UUID) async -> [UUID] {
+        let usernames = Self.mentionedUsernames(in: text)
+        guard !usernames.isEmpty else { return [] }
+
+        let records = (try? await fetchProfilesByUsernames(usernames)) ?? []
+        let idsByUsername: [String: UUID] = Dictionary(
+            uniqueKeysWithValues: records.compactMap { record in
+                guard let username = record.username else { return nil }
+                return (UsernameRules.normalized(username), record.id)
+            }
+        )
+
+        var resolvedIDs: [UUID] = []
+        var seen = Set<UUID>()
+
+        for username in usernames {
+            guard let id = idsByUsername[username],
+                  id != actorID,
+                  seen.insert(id).inserted
+            else { continue }
+            resolvedIDs.append(id)
+        }
+
+        return resolvedIDs
+    }
+
     func publishMoment(_ request: MomentCreateRequest) async throws -> MomentPost {
+        guard try currentUserID() == request.author.id else {
+            throw SupabaseBackendError.notAuthenticated
+        }
+        // An earlier attempt may have committed even if its response was lost.
+        // Check the stable draft ID before uploading or inserting again.
+        if let existing = try await fetchFeedPost(id: request.id) {
+            return try confirmedDraftPost(existing, request: request)
+        }
         let imagePath = try await uploadMomentImageIfNeeded(
             data: request.media.photoData,
-            authorID: request.author.id
+            authorID: request.author.id,
+            postID: request.id
         )
 
         let payload = [
             SupabasePostRecord(
+                id: request.id,
+                is_shared_locally: request.shareLocally,
                 author_id: request.author.id,
-                drink_name: request.drink.name,
-                drink_subtitle: request.drink.subtitle,
-                drink_symbol: request.drink.symbol,
-                drink_primary_hex: request.drink.primaryHex,
-                drink_secondary_hex: request.drink.secondaryHex,
+                drink_name: request.drink?.name ?? "",
+                drink_subtitle: request.drink?.subtitle ?? "",
+                drink_symbol: request.drink?.symbol ?? "",
+                drink_primary_hex: request.drink?.primaryHex ?? "#2A1815",
+                drink_secondary_hex: request.drink?.secondaryHex ?? "#B86831",
                 venue_name: request.venue?.name,
                 venue_neighborhood: request.venue?.neighborhood,
                 venue_city: request.venue?.city,
@@ -30,55 +92,67 @@ extension SupabaseSocialBackendClient {
             )
         ]
 
-        let insertedPosts: [SupabaseInsertedRecord] = try await sendRest(
-            path: "posts",
-            method: "POST",
-            prefer: "return=representation",
-            body: payload
-        )
+        do {
+            let inserted: [SupabaseFeedPostRecord] = try await sendRest(
+                path: "posts", method: "POST",
+                queryItems: [URLQueryItem(name: "on_conflict", value: "id")],
+                prefer: "resolution=ignore-duplicates,return=representation", body: payload
+            )
+            if let record = inserted.first {
+                return try confirmedDraftPost(record, request: request)
+            }
+            // A concurrent attempt won the insert. Return the actual saved row.
+            guard let existing = try await fetchFeedPost(id: request.id) else {
+                throw SupabaseBackendError.invalidResponse
+            }
+            return try confirmedDraftPost(existing, request: request)
+        } catch {
+            // Resolve an ambiguous timeout from authoritative server state.
+            if let existing = try? await fetchFeedPost(id: request.id) {
+                return try confirmedDraftPost(existing, request: request)
+            }
+            throw error
+        }
+    }
 
-        let postID = insertedPosts.first?.id ?? UUID()
-        return MomentPost(
-            id: postID,
-            author: request.author,
-            drink: request.drink,
-            venue: request.venue,
-            location: request.location,
-            caption: request.caption,
-            createdAt: .now,
-            taggedFriends: request.taggedFriends,
-            isSharedMoment: request.isSharedMoment,
-            media: MomentMedia(
-                photoData: request.media.photoData,
-                remotePhotoURL: imagePath.map {
-                    environment.storageObjectURL(
-                        bucket: environment.storageBucket,
-                        objectPath: $0,
-                        isPublic: true
-                    )
-                },
-                primaryHex: request.media.primaryHex,
-                secondaryHex: request.media.secondaryHex,
-                symbol: request.media.symbol
-            ),
-            reactions: [],
-            comments: [],
-            commentCount: 0,
-            hasLoadedFullCommentThread: true,
-            presenceNote: request.taggedFriends.isEmpty ? nil : "\(request.taggedFriends.first?.displayName ?? "Friends") is in the post",
-            connectionPath: nil,
-            contextReason: request.venue == nil ? "Live right now" : "Just checked in"
+    private func confirmedDraftPost(_ record: SupabaseFeedPostRecord, request: MomentCreateRequest) throws -> MomentPost {
+        guard record.id == request.id, record.author_id == request.author.id else {
+            throw SupabaseBackendError.invalidResponse
+        }
+        var post = makeMomentPost(
+            from: record, author: request.author,
+            taggedFriends: request.taggedFriends.filter { record.tagged_user_ids.contains($0.id) },
+            comments: [], commentCount: 0, hasLoadedFullCommentThread: false,
+            reactions: [], viewerReactionKinds: [], fullyLoadedReactionKinds: []
+        )
+        post.media.photoData = request.media.photoData
+        post.media.photoAspectRatio = request.media.photoAspectRatio
+        return post
+    }
+
+    func deletePost(_ post: MomentPost, by _: UserProfile) async throws {
+        try await sendRestWithoutResponse(
+            path: "rpc/delete_own_post",
+            method: "POST",
+            body: SupabaseDeletePostRequest(target_post_id: post.id)
         )
     }
 
-    func deletePost(_ post: MomentPost, by viewer: UserProfile) async throws {
-        try await deleteRest(
-            path: "posts",
-            queryItems: [
-                URLQueryItem(name: "id", value: "eq.\(post.id.uuidString.lowercased())"),
-                URLQueryItem(name: "author_id", value: "eq.\(viewer.id.uuidString.lowercased())")
-            ]
-        )
+    func deletePostMedia(_ post: MomentPost) async {
+        let imagePaths = [post.media.remotePhotoURL]
+            .compactMap { $0.flatMap(extractStoragePath(from:)) }
+        let commentImagePaths = post.comments
+            .compactMap { $0.remotePhotoURL.flatMap(extractStoragePath(from:)) }
+
+        for imagePath in Set(imagePaths + commentImagePaths) {
+            await deleteObject(bucket: environment.storageBucket, objectPath: imagePath)
+        }
+    }
+
+    func deleteCommentMedia(_ comment: Comment) async {
+        if let imagePath = comment.remotePhotoURL.flatMap({ extractStoragePath(from: $0) }) {
+            await deleteObject(bucket: environment.storageBucket, objectPath: imagePath)
+        }
     }
 
     func recordReaction(_ kind: ReactionKind, to post: MomentPost, by viewer: UserProfile) async throws -> OutboundNotificationDelivery? {
@@ -100,12 +174,22 @@ extension SupabaseSocialBackendClient {
 
         guard post.author.id != viewer.id else { return nil }
 
+        let notificationTitle: String
+        let notificationDetail: String
+        if kind == .dislike {
+            notificationTitle = "\(viewer.displayName) did not fw your post"
+            notificationDetail = "\(viewer.displayName) did not fw your post"
+        } else {
+            notificationTitle = "\(viewer.displayName) liked your post"
+            notificationDetail = "\(viewer.displayName) liked your \(post.drink.map { "\($0.name) " } ?? "")post."
+        }
+
         return OutboundNotificationDelivery(
             id: UUID(),
             recipient: post.author,
             kind: .reaction,
-            title: "\(viewer.displayName) liked your post",
-            detail: "\(viewer.displayName) liked your \(post.drink.name) post.",
+            title: notificationTitle,
+            detail: notificationDetail,
             createdAt: .now
         )
     }
@@ -138,6 +222,7 @@ extension SupabaseSocialBackendClient {
     }
 
     func recordComment(_ comment: Comment, on post: MomentPost, by viewer: UserProfile) async throws -> OutboundNotificationDelivery? {
+        let mentionedUserIDs = await resolveMentionedUserIDs(in: comment.text, excluding: viewer.id)
         let imagePath = try await uploadCommentImageIfNeeded(
             data: comment.photoData,
             authorID: viewer.id
@@ -151,7 +236,8 @@ extension SupabaseSocialBackendClient {
                 body: comment.text,
                 kind: comment.kind.databaseValue,
                 image_path: imagePath,
-                reply_to_comment_id: comment.replyToCommentID
+                reply_to_comment_id: comment.replyToCommentID,
+                mentioned_user_ids: mentionedUserIDs
             )
         ]
 
@@ -164,13 +250,87 @@ extension SupabaseSocialBackendClient {
 
         guard post.author.id != viewer.id else { return nil }
 
+        // Insert a notification row directly so the post author sees it on
+        // their next poll cycle (and gets a push via the server-side trigger).
+        // We use on_conflict=ignore so duplicate taps don't create extra rows.
+        let notifKind: NotificationKind = comment.kind == .photo ? .photoReply : .comment
+        let notifDetail = comment.text.isEmpty ? "Sent a photo." : comment.text
+        let notifPayload = [
+            SupabaseCommentNotificationInsert(
+                user_id: post.author.id,
+                kind: notifKind.rawValue,
+                title: "\(viewer.displayName) commented on your post",
+                detail: notifDetail,
+                actor_id: viewer.id,
+                post_id: post.id,
+                comment_id: comment.id
+            )
+        ]
+        try? await sendRestWithoutResponse(
+            path: "notifications",
+            method: "POST",
+            queryItems: [URLQueryItem(name: "on_conflict", value: "actor_id,post_id,comment_id,kind")],
+            prefer: "resolution=ignore-duplicates,return=minimal",
+            body: notifPayload
+        )
+
         return OutboundNotificationDelivery(
             id: UUID(),
             recipient: post.author,
-            kind: comment.kind == .photo ? .photoReply : .comment,
+            kind: notifKind,
             title: "\(viewer.displayName) commented on your post",
+            detail: notifDetail,
+            createdAt: .now
+        )
+    }
+
+    func recordCommentLike(_ comment: Comment, on post: MomentPost, by viewer: UserProfile) async throws -> OutboundNotificationDelivery? {
+        let payload = [
+            SupabaseCommentLikeRecord(
+                comment_id: comment.id,
+                user_id: viewer.id,
+                created_at: nil
+            )
+        ]
+
+        try await sendRestWithoutResponse(
+            path: "comment_likes",
+            method: "POST",
+            queryItems: [URLQueryItem(name: "on_conflict", value: "comment_id,user_id")],
+            prefer: "resolution=merge-duplicates,return=minimal",
+            body: payload
+        )
+
+        guard comment.author.id != viewer.id else { return nil }
+
+        return OutboundNotificationDelivery(
+            id: UUID(),
+            recipient: comment.author,
+            kind: .commentLike,
+            title: "\(viewer.displayName) liked your comment",
             detail: comment.text,
             createdAt: .now
+        )
+    }
+
+    func removeCommentLike(_ comment: Comment, on post: MomentPost, by viewer: UserProfile) async throws {
+        try await deleteRest(
+            path: "comment_likes",
+            queryItems: [
+                URLQueryItem(name: "comment_id", value: "eq.\(comment.id.uuidString.lowercased())"),
+                URLQueryItem(name: "user_id", value: "eq.\(viewer.id.uuidString.lowercased())")
+            ]
+        )
+    }
+
+    func deleteCommentLikeNotification(_ comment: Comment, by actor: UserProfile) async throws {
+        try await deleteRest(
+            path: "notifications",
+            queryItems: [
+                URLQueryItem(name: "actor_id", value: "eq.\(actor.id.uuidString.lowercased())"),
+                URLQueryItem(name: "comment_id", value: "eq.\(comment.id.uuidString.lowercased())"),
+                URLQueryItem(name: "kind", value: "eq.\(NotificationKind.commentLike.rawValue)")
+            ]
         )
     }
 
@@ -185,29 +345,18 @@ extension SupabaseSocialBackendClient {
     }
 
     func submitContentReport(_ request: ContentReportRequest) async throws {
-        let reporterID = try currentUserID()
-        let reporterUsername = try await fetchCurrentProfile()?.username ?? "unknown"
-
-        let payload = [
-            SupabaseContentReportInsert(
-                reporter_id: reporterID,
-                reporter_username: normalizedReportField(reporterUsername, fallback: "unknown", maxLength: 64),
-                target_type: request.target.rawValue,
-                target_post_id: request.postID,
-                target_comment_id: request.commentID,
-                target_author_id: request.targetAuthorID,
-                target_author_username: normalizedReportField(request.targetAuthorUsername, fallback: "unknown", maxLength: 64),
-                target_excerpt: normalizedReportField(request.targetExcerpt, fallback: "(no preview)", maxLength: 240),
-                reason: "community_report",
-                detail: normalizedReportField(request.detail, fallback: "", maxLength: 500)
-            )
-        ]
+        let payload = SupabaseContentReportSubmitRequest(
+            target_type: request.target.rawValue,
+            target_post_id: request.postID,
+            target_comment_id: request.commentID,
+            target_user_id: request.target == .user ? request.targetUserID : nil,
+            detail: normalizedReportField(request.detail, fallback: "", maxLength: 500)
+        )
 
         do {
             try await sendRestWithoutResponse(
-                path: "content_reports",
+                path: "rpc/submit_content_report",
                 method: "POST",
-                prefer: "return=minimal",
                 body: payload
             )
         } catch SupabaseBackendError.requestFailed(_, let statusCode) where statusCode == 409 {
@@ -349,18 +498,15 @@ extension SupabaseSocialBackendClient {
     }
 
     func updateNightGroup(_ group: NightGroup) async throws {
-        let payload = SupabaseNightGroupUpdate(
-            name: group.name,
-            member_ids: group.memberIDs
-        )
         try await sendRestWithoutResponse(
-            path: "night_groups",
-            method: "PATCH",
-            queryItems: [
-                URLQueryItem(name: "id", value: "eq.\(group.id.uuidString.lowercased())")
-            ],
+            path: "rpc/update_night_group",
+            method: "POST",
             prefer: "return=minimal",
-            body: payload
+            body: SupabaseNightGroupUpdateRequest(
+                group_id: group.id,
+                new_name: group.name,
+                new_member_ids: group.memberIDs
+            )
         )
     }
 
@@ -374,9 +520,7 @@ extension SupabaseSocialBackendClient {
     }
 
     func fetchNightGroups(createdAfter windowStart: Date) async throws -> [NightGroup] {
-        let iso = ISO8601DateFormatter()
-        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let windowStr = iso.string(from: windowStart)
+        let windowStr = SupabaseDateCoder.iso8601Formatter.string(from: windowStart)
 
         let records: [SupabaseNightGroupRecord] = try await sendRest(
             path: "night_groups",
@@ -384,7 +528,11 @@ extension SupabaseSocialBackendClient {
             queryItems: [
                 URLQueryItem(name: "select", value: SupabaseNightGroupRecord.selectList),
                 URLQueryItem(name: "created_at", value: "gte.\(windowStr)"),
-                URLQueryItem(name: "order", value: "created_at.asc")
+                URLQueryItem(name: "order", value: "created_at.asc"),
+                // Hard cap: no realistic user creates more than 50 groups in a
+                // single night window. Without this PostgREST returns every row
+                // that matches the RLS policy, which scales with the user's age.
+                URLQueryItem(name: "limit", value: "50")
             ],
             responseType: [SupabaseNightGroupRecord].self
         )

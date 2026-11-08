@@ -8,9 +8,8 @@ extension AppStore {
     /// sorted newest-first. Source of truth for the group feed and aggregate count.
     func groupPosts(for group: NightGroup) -> [MomentPost] {
         let memberSet = Set(group.memberIDs)
-        let window = Self.tonightWindow(reference: .now)
         return sortPostsByRecency(
-            posts.filter { memberSet.contains($0.author.id) && window.contains($0.createdAt) }
+            tonightActivitySourcePosts.filter { memberSet.contains($0.author.id) }
         )
     }
 
@@ -62,12 +61,19 @@ extension AppStore {
                 // the push to all added members.
                 let recipientIDs = friendIDs.filter { $0 != viewerID }
                 if !recipientIDs.isEmpty {
-                    try? await backend.insertGroupNotifications(
-                        group: group,
-                        recipientIDs: recipientIDs,
-                        creator: creator
-                    )
+                    do {
+                        try await backend.insertGroupNotifications(
+                            group: group,
+                            recipientIDs: recipientIDs,
+                            creator: creator
+                        )
+                    } catch {
+                        await MainActor.run {
+                            socialErrorMessage = "Group created, but member notifications couldn't be sent."
+                        }
+                    }
                 }
+                await syncGroupsFromBackend()
             } catch {
                 // Roll back the optimistic insert on failure.
                 await MainActor.run {
@@ -81,8 +87,8 @@ extension AppStore {
     /// Saves edits (name + members) optimistically and syncs to backend.
     ///
     /// Routing logic:
-    /// - If member_ids changed (new friends added): uses the full `updateNightGroup`
-    ///   PATCH. Any member may do this — the `member_update` RLS policy permits it.
+    /// - If member_ids changed (new friends added): uses the `updateNightGroup`
+    ///   RPC. The backend preserves existing members and rejects direct rewrites.
     /// - If only the name changed: uses `renameNightGroup` (name-only payload) to
     ///   keep the write surface minimal and avoid touching member_ids unnecessarily.
     ///
@@ -93,11 +99,24 @@ extension AppStore {
         guard let idx = nightGroups.firstIndex(where: { $0.id == updated.id }) else { return false }
         let previous = nightGroups[idx]
         let membersChanged = Set(updated.memberIDs) != Set(previous.memberIDs)
+        let addedMemberIDs = updated.memberIDs.filter { !previous.memberIDs.contains($0) }
         nightGroups[idx] = updated
 
         do {
             if membersChanged {
                 try await backend.updateNightGroup(updated)
+                let recipientIDs = addedMemberIDs.filter { $0 != viewerIdentity.id }
+                if !recipientIDs.isEmpty {
+                    do {
+                        try await backend.insertGroupNotifications(
+                            group: updated,
+                            recipientIDs: recipientIDs,
+                            creator: viewerIdentity
+                        )
+                    } catch {
+                        socialErrorMessage = "Group updated, but new-member notifications couldn't be sent."
+                    }
+                }
             } else {
                 try await backend.renameNightGroup(id: updated.id, name: updated.name)
             }
@@ -125,6 +144,7 @@ extension AppStore {
         Task {
             do {
                 try await backend.deleteNightGroup(id: groupID)
+                await syncGroupsFromBackend()
             } catch {
                 await MainActor.run {
                     // Roll back on failure.

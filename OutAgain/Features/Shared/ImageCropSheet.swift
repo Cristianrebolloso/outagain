@@ -7,25 +7,34 @@ struct IdentifiableImage: Identifiable {
     let image: UIImage
 }
 
-/// Full-screen interactive crop sheet. Starts fully zoomed-out so the whole
-/// image fits inside the circle; user pinches to zoom in and drags to reposition.
+/// Full-screen interactive crop sheet. The image can be pinched and dragged
+/// behind the crop circle to choose the framing.
 struct ImageCropSheet: View {
+    @Environment(AppStore.self) private var store
     let image: UIImage
     let onConfirm: (Data) -> Void
     let onCancel: () -> Void
 
     @State private var scale: CGFloat = 1.0
-    @State private var offset: CGSize = .zero
     @State private var lastScale: CGFloat = 1.0
+    @State private var offset: CGSize = .zero
     @State private var lastOffset: CGSize = .zero
     @State private var initialised = false
-    @State private var safeAreaTop: CGFloat = 59  // sensible default for Dynamic Island devices
 
-    private let cropDiameter: CGFloat = 300
-    private let maxScale: CGFloat = 8.0
+    private let maxScale: CGFloat = 6.0
 
+    @ViewBuilder
     var body: some View {
+        if store.isDuoDevice {
+            duoCrop
+        } else {
+            PhoneImageCropSheet(image: image, onConfirm: onConfirm, onCancel: onCancel)
+        }
+    }
+
+    private var duoCrop: some View {
         GeometryReader { geo in
+            let diameter = cropDiameter(in: geo.size)
             ZStack {
                 Color.black.ignoresSafeArea()
 
@@ -41,18 +50,20 @@ struct ImageCropSheet: View {
                         SimultaneousGesture(
                             MagnificationGesture()
                                 .onChanged { value in
-                                    let minScale = fitScale(in: geo.size)
-                                    scale = (lastScale * value).clamped(to: minScale...maxScale)
+                                    let minScale = minimumScale(in: geo.size)
+                                    let upperScale = max(maxScale, minScale)
+                                    scale = (lastScale * value).clamped(to: minScale...upperScale)
+                                    clampOffset(geoSize: geo.size)
                                 }
                                 .onEnded { _ in
-                                    lastScale = scale
                                     clampOffset(geoSize: geo.size)
+                                    lastScale = scale
                                     lastOffset = offset
                                 },
                             DragGesture()
                                 .onChanged { value in
                                     offset = CGSize(
-                                        width:  lastOffset.width  + value.translation.width,
+                                        width: lastOffset.width + value.translation.width,
                                         height: lastOffset.height + value.translation.height
                                     )
                                 }
@@ -64,8 +75,7 @@ struct ImageCropSheet: View {
                     )
 
                 // Darkened surround with circular cutout
-                CropOverlay(diameter: cropDiameter)
-                    .ignoresSafeArea()
+                CropOverlay(diameter: diameter)
                     .allowsHitTesting(false)
 
                 // Chrome
@@ -73,26 +83,20 @@ struct ImageCropSheet: View {
                     // Cancel — below the safe area notch
                     HStack {
                         Button("Cancel") { onCancel() }
-                            .font(.system(.body, design: .rounded, weight: .semibold))
+                            .font(AppTypography.bodyMedium)
                             .foregroundStyle(.white)
                             .padding(.horizontal, 18)
                             .padding(.vertical, 10)
                             .background(.ultraThinMaterial, in: Capsule())
-                            .overlay(Capsule().strokeBorder(.white.opacity(0.15), lineWidth: 1))
+                            .overlay(Capsule().strokeBorder(.white.opacity(0.10), lineWidth: 1))
                             .glassEffect(.regular.interactive(), in: .capsule)
+                            .contentShape(Capsule())
                             .padding(.leading, 20)
-                            .padding(.top, safeAreaTop + 12)
+                            .padding(.top, 12)
 
                         Spacer()
                     }
-                    .background(
-                        GeometryReader { safeGeo in
-                            Color.clear.onAppear {
-                                let top = safeGeo.safeAreaInsets.top
-                                if top > 0 { safeAreaTop = top }
-                            }
-                        }
-                    )
+
 
                     Spacer()
 
@@ -101,54 +105,45 @@ struct ImageCropSheet: View {
                         confirmCrop(geoSize: geo.size)
                     } label: {
                         Text("Use Photo")
-                            .font(.system(.headline, design: .rounded, weight: .bold))
+                            .font(AppTypography.button)
                             .foregroundStyle(.black)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 16)
                             .background(.white, in: Capsule())
+                            .contentShape(Capsule())
                     }
                     .buttonStyle(.plain)
+                    .contentShape(Capsule())
                     .padding(.horizontal, 40)
-                    .padding(.bottom, max(geo.safeAreaInsets.bottom, 24) + 8)
+                    .padding(.bottom, 16)
                 }
             }
             .onAppear {
                 guard !initialised else { return }
-                let fit = fitScale(in: geo.size)
-                scale = fit
-                lastScale = fit
+                let minScale = minimumScale(in: geo.size)
+                scale = max(1, minScale).clamped(to: minScale...max(maxScale, minScale))
+                lastScale = scale
+                clampOffset(geoSize: geo.size)
+                lastOffset = offset
                 initialised = true
             }
+            .onChange(of: geo.size) { oldSize, newSize in
+                guard initialised, oldSize.width > 0, oldSize.height > 0 else { return }
+                let oldBase = baseImageSize(in: oldSize)
+                let newBase = baseImageSize(in: newSize)
+                let ratio = cropDiameter(in: newSize) / cropDiameter(in: oldSize)
+                if newBase.width > 0 { scale *= oldBase.width / newBase.width * ratio }
+                offset = CGSize(width: offset.width * ratio, height: offset.height * ratio)
+                clampOffset(geoSize: newSize)
+                lastScale = scale
+                lastOffset = offset
+            }
         }
-        .ignoresSafeArea()
+        .background(Color.black.ignoresSafeArea())
     }
 
-    // MARK: - Scale that makes the full image fit inside the crop circle
-
-    /// Returns the scale at which the image's smaller dimension exactly equals
-    /// the crop diameter — so the whole image is visible inside the circle.
-    private func fitScale(in geoSize: CGSize) -> CGFloat {
-        let imgW = image.size.width
-        let imgH = image.size.height
-        let imgAspect = imgW / imgH
-        let geoAspect = geoSize.width / geoSize.height
-
-        // Size the image would be rendered at scale=1 with .scaledToFit
-        let renderedW: CGFloat
-        let renderedH: CGFloat
-        if imgAspect > geoAspect {
-            renderedW = geoSize.width
-            renderedH = geoSize.width / imgAspect
-        } else {
-            renderedH = geoSize.height
-            renderedW = geoSize.height * imgAspect
-        }
-
-        // Scale so the image's smaller rendered dimension fits the crop diameter
-        let scaleW = cropDiameter / renderedW
-        let scaleH = cropDiameter / renderedH
-        // Use the larger of the two so the whole image fits inside the circle
-        return max(scaleW, scaleH)
+    private func cropDiameter(in size: CGSize) -> CGFloat {
+        min(300, max(44, min(size.width - 40, size.height - 160)))
     }
 
     // MARK: - Crop rendering
@@ -158,52 +153,18 @@ struct ImageCropSheet: View {
         let renderer = UIGraphicsImageRenderer(size: outputSize)
 
         let rendered = renderer.image { _ in
-            let imgAspect = image.size.width / image.size.height
-            let geoAspect = geoSize.width / geoSize.height
+            let imageRect = imageDrawRect(in: geoSize)
+            let cropRect = cropCircleRect(in: geoSize)
+            let outputScale = outputSize.width / cropDiameter(in: geoSize)
+            let outputImageRect = CGRect(
+                x: (imageRect.minX - cropRect.minX) * outputScale,
+                y: (imageRect.minY - cropRect.minY) * outputScale,
+                width: imageRect.width * outputScale,
+                height: imageRect.height * outputScale
+            )
 
-            // Rendered size of the image at scale=1 (.scaledToFit)
-            let renderedW: CGFloat
-            let renderedH: CGFloat
-            if imgAspect > geoAspect {
-                renderedW = geoSize.width
-                renderedH = geoSize.width / imgAspect
-            } else {
-                renderedH = geoSize.height
-                renderedW = geoSize.height * imgAspect
-            }
-
-            // Actual drawn size after user scale
-            let drawW = renderedW * scale
-            let drawH = renderedH * scale
-
-            // Top-left of the drawn image on screen
-            let drawX = (geoSize.width  - drawW) / 2 + offset.width
-            let drawY = (geoSize.height - drawH) / 2 + offset.height
-
-            // Crop circle bounds on screen
-            let circleX = (geoSize.width  - cropDiameter) / 2
-            let circleY = (geoSize.height - cropDiameter) / 2
-
-            // Map crop rect → normalised within drawn image → source pixels
-            let normX = (circleX - drawX) / drawW
-            let normY = (circleY - drawY) / drawH
-            let normW = cropDiameter / drawW
-            let normH = cropDiameter / drawH
-
-            let srcX = normX * image.size.width
-            let srcY = normY * image.size.height
-            let srcW = normW * image.size.width
-            let srcH = normH * image.size.height
-            let srcRect = CGRect(x: srcX, y: srcY, width: srcW, height: srcH)
-
-            // Clip to circle and draw
             UIBezierPath(ovalIn: CGRect(origin: .zero, size: outputSize)).addClip()
-
-            if let cropped = image.cgImage?.cropping(to: srcRect) {
-                UIImage(cgImage: cropped).draw(in: CGRect(origin: .zero, size: outputSize))
-            } else {
-                image.draw(in: CGRect(origin: .zero, size: outputSize))
-            }
+            image.draw(in: outputImageRect)
         }
 
         if let data = rendered.jpegData(compressionQuality: 0.88) {
@@ -214,6 +175,49 @@ struct ImageCropSheet: View {
     // MARK: - Clamp offset so image always covers the crop circle
 
     private func clampOffset(geoSize: CGSize) {
+        let minScale = minimumScale(in: geoSize)
+        scale = scale.clamped(to: minScale...max(maxScale, minScale))
+        let imageSize = baseImageSize(in: geoSize)
+        let scaledW = imageSize.width * scale
+        let scaledH = imageSize.height * scale
+
+        let maxOffX = max(0, (scaledW - cropDiameter(in: geoSize)) / 2)
+        let maxOffY = max(0, (scaledH - cropDiameter(in: geoSize)) / 2)
+
+        offset = CGSize(
+            width: offset.width.clamped(to: -maxOffX...maxOffX),
+            height: offset.height.clamped(to: -maxOffY...maxOffY)
+        )
+    }
+
+    private func minimumScale(in geoSize: CGSize) -> CGFloat {
+        let imageSize = baseImageSize(in: geoSize)
+        guard imageSize.width > 0, imageSize.height > 0 else { return 1 }
+        return max(cropDiameter(in: geoSize) / imageSize.width, cropDiameter(in: geoSize) / imageSize.height)
+    }
+
+    private func imageDrawRect(in geoSize: CGSize) -> CGRect {
+        let imageSize = baseImageSize(in: geoSize)
+        let scaledSize = CGSize(width: imageSize.width * scale, height: imageSize.height * scale)
+        return CGRect(
+            x: (geoSize.width - scaledSize.width) / 2 + offset.width,
+            y: (geoSize.height - scaledSize.height) / 2 + offset.height,
+            width: scaledSize.width,
+            height: scaledSize.height
+        )
+    }
+
+    private func cropCircleRect(in geoSize: CGSize) -> CGRect {
+        let diameter = cropDiameter(in: geoSize)
+        return CGRect(
+            x: (geoSize.width - diameter) / 2,
+            y: (geoSize.height - diameter) / 2,
+            width: diameter,
+            height: diameter
+        )
+    }
+
+    private func baseImageSize(in geoSize: CGSize) -> CGSize {
         let imgAspect = image.size.width / image.size.height
         let geoAspect = geoSize.width / geoSize.height
 
@@ -227,17 +231,7 @@ struct ImageCropSheet: View {
             renderedW = geoSize.height * imgAspect
         }
 
-        let scaledW = renderedW * scale
-        let scaledH = renderedH * scale
-
-        // Allow dragging until the image edge meets the crop circle edge
-        let maxOffX = max(0, (scaledW - cropDiameter) / 2)
-        let maxOffY = max(0, (scaledH - cropDiameter) / 2)
-
-        offset = CGSize(
-            width:  offset.width.clamped(to:  -maxOffX...maxOffX),
-            height: offset.height.clamped(to: -maxOffY...maxOffY)
-        )
+        return CGSize(width: renderedW, height: renderedH)
     }
 }
 

@@ -1,61 +1,39 @@
 import Foundation
 
 extension AppStore {
-    func searchContacts(using contacts: [ContactLookupSeed]) {
-        guard !contacts.isEmpty else {
-            contactMatches = []
-            return
-        }
-
-        isSearchingContactMatches = true
-
-        Task {
-            defer { isSearchingContactMatches = false }
-
-            do {
-                let matches = try await backend.searchContacts(matching: contacts, excluding: viewer)
-                contactMatches = matches.filter { candidate in
-                    candidate.id != viewer?.id
-                        && !friends.contains(where: { $0.id == candidate.id })
-                }
-            } catch {
-                socialErrorMessage = "Couldn't match your contacts right now."
-            }
-        }
-    }
-
     func submitAuth() {
+        guard !authDraft.isSubmitting else { return }
         socialErrorMessage = nil
 
-        // Developer shortcut: typing `1` in both fields resolves to locally
-        // configured debug credentials when this device has
+        // Local debug shortcut: typing `1` in both fields resolves to locally
+        // configured credentials when this device has
         // OUTAGAIN_DEV_SHORTCUT_EMAIL/PASSWORD set outside the repo.
         // The call still hits the normal `POST /auth/v1/token` backend path.
         let devShortcut = DeveloperTestAccount.resolve(
-            email: authDraft.email,
+            email: authDraft.identifier,
             password: authDraft.password
         )
 
-        let resolvedEmail: String
+        let resolvedIdentifier: String
         let resolvedPassword: String
         let effectiveMode: AuthEntryMode
 
         if let devShortcut {
-            resolvedEmail = devShortcut.email
+            resolvedIdentifier = devShortcut.email
             resolvedPassword = devShortcut.password
             // Always attempt sign-in for the shortcut. It targets an already
-            // provisioned dev account, never a sign-up flow.
+            // provisioned local account, never a sign-up flow.
             effectiveMode = .signIn
         } else {
-            guard let normalizedEmail = normalizedOnboardingEmail else {
-                socialErrorMessage = SupabaseBackendError.invalidEmailAddress.errorDescription
+            guard let normalizedIdentifier = isSignInMode ? normalizedSignInIdentifier : normalizedOnboardingEmail else {
+                socialErrorMessage = isSignInMode ? "Enter your username or email address." : SupabaseBackendError.invalidEmailAddress.errorDescription
                 return
             }
             guard canSubmitAuth else {
                 socialErrorMessage = SupabaseBackendError.invalidPassword.errorDescription
                 return
             }
-            resolvedEmail = normalizedEmail
+            resolvedIdentifier = normalizedIdentifier
             resolvedPassword = authPassword
             effectiveMode = authDraft.mode
         }
@@ -68,7 +46,7 @@ extension AppStore {
                 switch effectiveMode {
                 case .signUp:
                     do {
-                        try await backend.signUp(email: resolvedEmail, password: resolvedPassword)
+                        try await backend.signUp(email: resolvedIdentifier, password: resolvedPassword)
                     } catch {
                         // If sign-up fails because the account already exists,
                         // silently fall through to sign-in with the same
@@ -79,30 +57,34 @@ extension AppStore {
                             || message.contains("user already")
                             || message.contains("email address is already")
                         guard isAlreadyRegistered else { throw error }
-                        try await backend.signIn(email: resolvedEmail, password: resolvedPassword)
+                        try await backend.signIn(identifier: resolvedIdentifier, password: resolvedPassword)
                     }
                 case .signIn:
-                    try await backend.signIn(email: resolvedEmail, password: resolvedPassword)
+                    try await backend.signIn(identifier: resolvedIdentifier, password: resolvedPassword)
                 }
 
                 if onboardingDraft.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    onboardingDraft.displayName = EmailAddressRules.displaySeed(from: resolvedEmail)
+                    onboardingDraft.displayName = EmailAddressRules.displaySeed(from: resolvedIdentifier)
                 }
 
-                let bootstrap = try await backend.loadAppData()
-                applyBootstrap(bootstrap)
-                authState = .signedIn
+                try await finishAuthentication()
+            } catch {
+                socialErrorMessage = error.localizedDescription
+            }
+        }
+    }
 
-                if let backendViewer = bootstrap.viewer,
-                   !backendViewer.username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    if onboardingDraft.inviteLink.isEmpty {
-                        onboardingDraft.inviteLink = backend.createInviteLink(for: backendViewer.username).absoluteString
-                    }
-                    promoteToLiveSession()
-                } else {
-                    onboardingStep = .profile
-                    await refreshUsernameAvailability()
-                }
+    func submitPasskeySignIn() {
+        guard arePasskeysEnabled, !authDraft.isSubmitting else { return }
+        socialErrorMessage = nil
+        authDraft.isSubmitting = true
+        Task {
+            defer { authDraft.isSubmitting = false }
+            do {
+                try await backend.signInWithPasskey()
+                try await finishAuthentication()
+            } catch PasskeyError.cancelled {
+                // Dismissing the system sheet is not a sign-in failure.
             } catch {
                 socialErrorMessage = error.localizedDescription
             }
@@ -110,6 +92,7 @@ extension AppStore {
     }
 
     func toggleAuthMode() {
+        guard !authDraft.isSubmitting else { return }
         authDraft.mode = isSignInMode ? .signUp : .signIn
         authDraft.password = ""
         socialErrorMessage = nil
@@ -173,6 +156,24 @@ extension AppStore {
 }
 
 private extension AppStore {
+    func finishAuthentication() async throws {
+        let bootstrap = try await backend.loadAppData()
+        applyBootstrap(bootstrap)
+        authState = .signedIn
+
+        if let backendViewer = bootstrap.viewer,
+           !backendViewer.username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if onboardingDraft.inviteLink.isEmpty {
+                onboardingDraft.inviteLink = backend.createInviteLink(for: backendViewer.username).absoluteString
+            }
+            promoteToLiveSession()
+        } else {
+            onboardingStep = .profile
+            await refreshUsernameAvailability()
+        }
+        authDraft.password = ""
+    }
+
     func completeProfileOnboarding() async {
         socialErrorMessage = nil
 
@@ -194,7 +195,8 @@ private extension AppStore {
                     email: normalizedOnboardingEmail,
                     displayName: onboardingDraft.displayName,
                     username: availableUsername,
-                    profileImageData: onboardingDraft.profileImageData
+                    profileImageData: onboardingDraft.profileImageData,
+                    backgroundTheme: backgroundTheme
                 )
             )
         } catch {

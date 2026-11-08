@@ -1,10 +1,10 @@
 // Edge function: notify-activity
 //
 // Receives a push dispatch payload from the `dispatch_notification_push`
-// Postgres trigger (or from any other authenticated caller), looks up the
-// recipient's registered device tokens, mints an APNs JWT, and sends an HTTP/2
-// push to api.push.apple.com for each device. Bad-token responses (410 Gone
-// or 400 BadDeviceToken) retire the offending row from public.devices.
+// Postgres trigger, looks up the recipient's registered device tokens, mints
+// an APNs JWT, and sends an HTTP/2 push to the matching APNs environment for
+// each device. Bad-token responses (410 Gone or 400 BadDeviceToken) retire
+// the offending row from public.devices.
 //
 // Environment (set via `supabase secrets set`):
 //   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY  -- standard edge-function secrets
@@ -30,6 +30,9 @@ type DeliveryRequest = {
   body?: string | null
   postId?: string | null
   commentId?: string | null
+  nightStart?: string | null
+  nightEnd?: string | null
+  nightGroupId?: string | null
 }
 
 type DeliveryFailure = {
@@ -38,6 +41,8 @@ type DeliveryFailure = {
   status: number
   reason?: string
 }
+
+type ApnsEnvironment = "development" | "production"
 
 type PushAttemptClient = {
   from: (table: string) => {
@@ -68,11 +73,6 @@ Deno.serve(async (request) => {
     return json({ error: "Method not allowed" }, 405)
   }
 
-  // Two caller shapes are supported:
-  //   1. Trigger-invoked: uses the service role bearer token set in the
-  //      postgres app.settings. That bearer is accepted as-is.
-  //   2. Client-invoked: authenticated user calling directly (rare; the
-  //      trigger path is the default). We validate the JWT and proceed.
   const authHeader = request.headers.get("Authorization") ?? ""
   if (!authHeader.toLowerCase().startsWith("bearer ")) {
     return json({ error: "Missing authorization header" }, 401)
@@ -80,6 +80,14 @@ Deno.serve(async (request) => {
 
   const supabaseUrl = required("SUPABASE_URL")
   const serviceRoleKey = required("SUPABASE_SERVICE_ROLE_KEY")
+  const bearerToken = authHeader.slice(7).trim()
+
+  // This endpoint is internal-only. The database trigger authenticates with
+  // the service-role key, and we validate that key here because this function
+  // is deployed with gateway JWT verification disabled.
+  if (bearerToken != serviceRoleKey) {
+    return json({ error: "Unauthorized" }, 401)
+  }
 
   const admin = createClient(supabaseUrl, serviceRoleKey, {
     auth: { persistSession: false, autoRefreshToken: false },
@@ -105,6 +113,33 @@ Deno.serve(async (request) => {
     return json(responseBody, 400)
   }
 
+  // Recheck the account's opt-out immediately before any APNs delivery.
+  // Missing rows/values default on; a lookup failure must not bypass opt-outs.
+  const [preferenceColumn, disabledReason] = preferenceForKind(payload.kind)
+  const { data: preference, error: preferenceError } = await admin
+    .from("notification_preferences")
+    .select(preferenceColumn)
+    .eq("user_id", payload.recipientUserId)
+    .maybeSingle()
+
+  if (preferenceError) {
+    const responseBody = { error: "Could not check notification preference" }
+    await recordPushAttempt(admin, payload.notificationId, {
+      status: "errored", edge_status_code: 503, edge_response: responseBody,
+      error_message: responseBody.error, delivered_count: 0, failure_count: 0,
+    })
+    return json(responseBody, 503)
+  }
+  if (preference?.[preferenceColumn] === false) {
+    const responseBody = { delivered: 0, skipped: disabledReason }
+    await recordPushAttempt(admin, payload.notificationId, {
+      status: "skipped", skip_reason: responseBody.skipped,
+      edge_status_code: 200, edge_response: responseBody,
+      delivered_count: 0, failure_count: 0,
+    })
+    return json(responseBody)
+  }
+
   const { data: deviceRows, error: deviceError } = await admin
     .from("devices")
     .select("id, apns_token, environment, last_seen_at")
@@ -123,11 +158,24 @@ Deno.serve(async (request) => {
     return json(responseBody, 500)
   }
 
-  if (!deviceRows || deviceRows.length === 0) {
-    const responseBody = { delivered: 0, skipped: "no-devices" }
+  let apnsEnvironment: ApnsEnvironment
+  try {
+    apnsEnvironment =
+      required("APNS_ENVIRONMENT").toLowerCase() === "development"
+        ? "development"
+        : "production"
+  } catch {
+    apnsEnvironment = "production"
+  }
+
+  const eligibleDeviceRows =
+    deviceRows?.filter((row) => row.environment === apnsEnvironment) ?? []
+
+  if (eligibleDeviceRows.length === 0) {
+    const responseBody = { delivered: 0, skipped: `no-${apnsEnvironment}-devices` }
     await recordPushAttempt(admin, payload.notificationId, {
       status: "skipped",
-      skip_reason: "no-devices",
+      skip_reason: `no-${apnsEnvironment}-devices`,
       edge_status_code: 200,
       edge_response: responseBody,
       delivered_count: 0,
@@ -184,7 +232,7 @@ Deno.serve(async (request) => {
   const failures: DeliveryFailure[] = []
 
   await Promise.all(
-    deviceRows.map(async (row) => {
+    eligibleDeviceRows.map(async (row) => {
       const host =
         row.environment === "development"
           ? "https://api.sandbox.push.apple.com"
@@ -201,6 +249,10 @@ Deno.serve(async (request) => {
 
       if (payload.notificationId) {
         headers["apns-collapse-id"] = payload.notificationId.slice(0, 64)
+      }
+      if (payload.kind === "announcement") {
+        // A weekend reminder should not arrive days later on an offline phone.
+        headers["apns-expiration"] = String(Math.floor(Date.now() / 1000) + 86400)
       }
 
       try {
@@ -326,10 +378,11 @@ type ApnsAlert = {
 }
 
 function buildPayload(payload: DeliveryRequest, badge: number = 1) {
-  const alert: ApnsAlert = {
-    title: payload.title ?? undefined,
-    body: payload.body ?? undefined,
-  }
+  // Social alerts are one invitation to open the destination. Announcement
+  // bodies are authored messages, so retain their content.
+  const alert: ApnsAlert = payload.kind === "announcement"
+    ? { title: payload.title ?? undefined, body: payload.body ?? undefined }
+    : { title: notificationHeadline(payload.kind, payload.title ?? "") || "New activity" }
 
   return {
     aps: {
@@ -345,8 +398,50 @@ function buildPayload(payload: DeliveryRequest, badge: number = 1) {
       postId: payload.postId ?? null,
       commentId: payload.commentId ?? null,
       actorUserId: payload.actorUserId ?? null,
+      nightStart: payload.nightStart ?? null,
+      nightEnd: payload.nightEnd ?? null,
+      nightGroupId: payload.nightGroupId ?? null,
     },
   }
+}
+
+// Keep aligned with NotificationCopy.swift for existing and newly queued rows.
+function notificationHeadline(kind: DeliveryRequest["kind"], title: string): string {
+  title = title.trim()
+  if (kind === "nightRecap") return "Last night's photos"
+
+  let replacements: [string, string][]
+  switch (kind) {
+    case "comment":
+      replacements = [
+        [" commented on your post", " left a comment on your post!"],
+        [" replied to your comment", " replied to your comment!"],
+      ]
+      break
+    case "photoReply":
+      replacements = [
+        [" commented on your post", " left a photo on your post!"],
+        [" replied to your comment", " replied to your comment with a photo!"],
+      ]
+      break
+    case "friendRequest":
+      replacements = [[" sent you a friend request", " sent you a friend request!"]]
+      break
+    case "friendAccepted":
+      replacements = [[" accepted your friend request", " accepted your friend request!"]]
+      break
+    case "commentTagged":
+      replacements = [[" mentioned you in a comment", " mentioned you in a comment!"]]
+      break
+    default:
+      return title
+  }
+
+  const sentence = title.replace(/[.!]+$/, "")
+  for (const [oldEnding, newEnding] of replacements) {
+    if (sentence.endsWith(oldEnding)) return sentence.slice(0, -oldEnding.length) + newEnding
+  }
+  return title
 }
 
 async function getApnsToken(): Promise<string> {
@@ -412,4 +507,20 @@ function pemToPkcs8(pem: string): ArrayBuffer {
     bytes[i] = binary.charCodeAt(i)
   }
   return bytes.buffer
+}
+
+// Keep this mapping aligned with the categories exposed in Settings.
+function preferenceForKind(kind: DeliveryRequest["kind"]): [string, string] {
+  switch (kind) {
+    case "nightRecap": return ["recaps_enabled", "recaps-disabled"]
+    case "announcement": return ["announcements_enabled", "announcements-disabled"]
+    case "friendRequest":
+    case "friendAccepted": return ["friend_requests_enabled", "friend-requests-disabled"]
+    case "reaction":
+    case "commentLike": return ["reactions_enabled", "reactions-disabled"]
+    case "comment":
+    case "photoReply":
+    case "commentTagged": return ["comments_enabled", "comments-disabled"]
+    default: return ["activity_enabled", "activity-disabled"]
+  }
 }

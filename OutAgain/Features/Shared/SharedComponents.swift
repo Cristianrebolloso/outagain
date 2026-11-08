@@ -1,8 +1,16 @@
 import CoreLocation
+import ImageIO
 import SwiftUI
 import UIKit
 
 extension Date {
+    private static let minuteRelativeFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        formatter.dateTimeStyle = .numeric
+        return formatter
+    }()
+
     /// Human-readable relative time at minute granularity — "Just now" for
     /// anything under a minute, then "5 min ago", "2 hr ago", etc. Used by
     /// activity surfaces where second-by-second precision reads as jitter
@@ -13,13 +21,9 @@ extension Date {
             return "Just now"
         }
 
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        formatter.dateTimeStyle = .numeric
-
         // Round to the nearest minute so the output never includes seconds.
         let flooredDate = Date(timeIntervalSinceNow: -floor(secondsElapsed / 60) * 60)
-        return formatter.localizedString(for: flooredDate, relativeTo: Date())
+        return Self.minuteRelativeFormatter.localizedString(for: flooredDate, relativeTo: Date())
     }
 
     var postClockTimeLabel: String {
@@ -53,26 +57,48 @@ extension CLLocationDistance {
     }
 }
 
+enum MainTabRefreshFeedback {
+    static let minimumVisibleDuration: TimeInterval = 0.55
+
+    static func waitForMinimumVisibleDuration(since startedAt: Date) async {
+        let remaining = minimumVisibleDuration - Date().timeIntervalSince(startedAt)
+        guard remaining > 0 else { return }
+
+        try? await Task.sleep(for: .milliseconds(Int(remaining * 1000)))
+    }
+}
+
+struct MainTabRefreshIndicator: View {
+    @Environment(\.appAccent) private var accent
+
+    var body: some View {
+        ProgressView()
+            .progressViewStyle(.circular)
+            .tint(accent)
+            .controlSize(.regular)
+            .padding(10)
+            .background(.black.opacity(0.58), in: Circle())
+            .overlay(Circle().strokeBorder(AppTheme.line, lineWidth: 1))
+            .shadow(color: .black.opacity(0.24), radius: 12, y: 6)
+            .accessibilityLabel("Refreshing")
+            .allowsHitTesting(false)
+    }
+}
+
 struct AvatarView: View {
     let avatar: AvatarStyle
     var size: CGFloat = 48
 
     var body: some View {
         ZStack {
-            if let imageData = avatar.imageData, let image = UIImage(data: imageData) {
+            if let imageData = avatar.imageData,
+               let image = ImageDecodeCache.image(for: imageData, key: ImageDecodeCache.cacheKey(forLocalData: imageData, prefix: "avatar")) {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
             } else if let remoteURL = avatar.remoteURL {
-                AsyncImage(url: remoteURL) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .scaledToFill()
-                    default:
-                        avatarPlaceholder
-                    }
+                RemoteDecodedImageView(url: remoteURL, contentMode: .fill) {
+                    avatarPlaceholder
                 }
             } else {
                 avatarPlaceholder
@@ -107,6 +133,7 @@ struct TonightAvatarView: View {
     let avatar: AvatarStyle
     let userID: UUID
     var size: CGFloat = 60
+    var showsPostCount = true
 
     private var ringInset: CGFloat { 3 }
 
@@ -135,9 +162,9 @@ struct TonightAvatarView: View {
         }
         .frame(width: size + ringInset * 2, height: size + ringInset * 2)
         .overlay(alignment: .bottom) {
-            if active {
+            if active && showsPostCount {
                 Text("\(count) \(count == 1 ? "post" : "posts")")
-                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .font(AppTypography.badgeStrong)
                     .foregroundStyle(.black)
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
@@ -148,7 +175,7 @@ struct TonightAvatarView: View {
                 .offset(y: 10)
             }
         }
-        .padding(.bottom, active ? 10 : 0)
+        .padding(.bottom, active && showsPostCount ? 10 : 0)
     }
 }
 
@@ -169,13 +196,249 @@ struct AvatarPile: View {
 
             if extraCount > 0 {
                 Text("+\(extraCount)")
-                    .font(.system(.caption, design: .rounded, weight: .semibold))
+                    .font(AppTypography.metadataEmphasis)
                     .foregroundStyle(.white)
                     .frame(width: size, height: size)
                     .background(.white.opacity(0.08), in: Circle())
                     .overlay(Circle().strokeBorder(AppTheme.line, lineWidth: 1))
             }
         }
+    }
+}
+
+struct VerifiedBadgeView: View {
+    var size: CGFloat = 12
+    var offsetY: CGFloat = 0  // kept for API compatibility; no longer applied
+
+    var body: some View {
+        Image(systemName: "checkmark.seal.fill")
+            .font(.system(size: size, weight: .bold))
+            .symbolRenderingMode(.monochrome)
+            .foregroundStyle(.white)
+            .shadow(color: .black.opacity(0.18), radius: 4, y: 1)
+            .offset(x: size * 0.06)
+            .frame(width: size, height: size)
+            .accessibilityLabel("Verified")
+    }
+}
+
+struct VerifiedProfileLabel<Label: View>: View {
+    let profile: UserProfile
+    var spacing: CGFloat = 6
+    var badgeSize: CGFloat = 12
+    private let label: () -> Label
+
+    init(
+        profile: UserProfile,
+        spacing: CGFloat = 6,
+        badgeSize: CGFloat = 12,
+        badgeOffsetY: CGFloat = 0,
+        @ViewBuilder label: @escaping () -> Label
+    ) {
+        self.profile = profile
+        self.spacing = spacing
+        self.badgeSize = badgeSize
+        self.label = label
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: spacing) {
+            label()
+
+            if profile.isVerified {
+                VerifiedBadgeView(size: badgeSize, offsetY: 0)
+                    .fixedSize()
+                    .alignmentGuide(.firstTextBaseline) { d in d[VerticalAlignment.center] }
+            }
+        }
+        .alignmentGuide(.firstTextBaseline) { d in d[.firstTextBaseline] }
+    }
+}
+
+struct VerifiedUsernameLabel: View {
+    let profile: UserProfile
+    var font: Font = AppTypography.usernameCompact
+    var color: Color = AppTheme.softText
+    var spacing: CGFloat = 3
+    var badgeSize: CGFloat = 10
+    var badgeOffsetY: CGFloat = 0  // kept for API compatibility; no longer applied
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 4) {
+            Text("@\(profile.username)")
+                .font(font)
+                .foregroundStyle(color)
+                .lineLimit(1)
+
+            if profile.isVerified {
+                VerifiedBadgeView(size: badgeSize)
+                    .alignmentGuide(.firstTextBaseline) { d in d[VerticalAlignment.center] }
+                    .fixedSize()
+            }
+        }
+    }
+}
+
+struct RemoteDecodedImageView<Placeholder: View>: View {
+    let url: URL
+    var contentMode: ContentMode = .fill
+    var onImageLoaded: ((UIImage) -> Void)? = nil
+    let placeholder: () -> Placeholder
+
+    @State private var loadedImage: UIImage? = nil
+    @State private var loadedURLString: String? = nil
+
+    init(
+        url: URL,
+        contentMode: ContentMode = .fill,
+        onImageLoaded: ((UIImage) -> Void)? = nil,
+        @ViewBuilder placeholder: @escaping () -> Placeholder
+    ) {
+        self.url = url
+        self.contentMode = contentMode
+        self.onImageLoaded = onImageLoaded
+        self.placeholder = placeholder
+
+        let cachedImage = Self.cachedImage(for: url)
+        _loadedImage = State(initialValue: cachedImage)
+        _loadedURLString = State(initialValue: cachedImage == nil ? nil : url.absoluteString)
+    }
+
+    var body: some View {
+        Group {
+            if loadedURLString == url.absoluteString, let loadedImage {
+                Image(uiImage: loadedImage)
+                    .resizable()
+                    .aspectRatio(contentMode: contentMode)
+            } else {
+                placeholder()
+                    .task(id: url.absoluteString) {
+                        loadedImage = nil
+                        loadedURLString = nil
+                        await load()
+                    }
+            }
+        }
+    }
+
+    private func load() async {
+        if let cachedImage = Self.cachedImage(for: url) {
+            await MainActor.run {
+                loadedURLString = url.absoluteString
+                loadedImage = cachedImage
+                onImageLoaded?(cachedImage)
+            }
+            return
+        }
+
+        do {
+            let request = Self.imageRequest(for: url)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  200 ..< 300 ~= http.statusCode,
+                  let image = ImageDecodeCache.image(for: data, key: url.absoluteString) else {
+                return
+            }
+            URLCache.shared.storeCachedResponse(
+                CachedURLResponse(response: response, data: data),
+                for: request
+            )
+            await MainActor.run {
+                loadedURLString = url.absoluteString
+                loadedImage = image
+                onImageLoaded?(image)
+            }
+        } catch {
+            // Keep the placeholder on-screen. A later refresh or view rebuild
+            // retries naturally without crashing the feed surface.
+        }
+    }
+
+    private static func cachedImage(for url: URL) -> UIImage? {
+        if let image = ImageDecodeCache.cachedImage(forKey: url.absoluteString) {
+            return image
+        }
+        let request = imageRequest(for: url)
+        guard let cached = URLCache.shared.cachedResponse(for: request) else { return nil }
+        return ImageDecodeCache.image(for: cached.data, key: url.absoluteString)
+    }
+
+    private static func imageRequest(for url: URL) -> URLRequest {
+        URLRequest(url: url, cachePolicy: .returnCacheDataElseLoad, timeoutInterval: 30)
+    }
+}
+
+enum ImageDecodeCache {
+    private static let maxPixelDimension: CGFloat = 1_800
+
+    private static let cache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.totalCostLimit = 96 * 1_024 * 1_024
+        cache.countLimit = 180
+        return cache
+    }()
+
+    static func cachedImage(forKey key: String) -> UIImage? {
+        cache.object(forKey: key as NSString)
+    }
+
+    static func image(for data: Data, key: String) -> UIImage? {
+        if let cached = cachedImage(forKey: key) {
+            return cached
+        }
+
+        guard let image = downsampledImage(from: data) ?? UIImage(data: data) else {
+            return nil
+        }
+
+        cache.setObject(image, forKey: key as NSString, cost: image.cacheCost)
+        return image
+    }
+
+    static func cacheKey(forLocalData data: Data, prefix: String) -> String {
+        var samples: [UInt8] = []
+        data.withUnsafeBytes { rawBuffer in
+            guard let bytes = rawBuffer.bindMemory(to: UInt8.self).baseAddress else { return }
+            let count = rawBuffer.count
+            let offsets = [0, count / 2, max(count - 16, 0)]
+            for offset in offsets where offset < count {
+                let length = min(16, count - offset)
+                samples.append(contentsOf: UnsafeBufferPointer(start: bytes + offset, count: length))
+            }
+        }
+
+        let signature = samples.map { String(format: "%02x", $0) }.joined()
+        return "\(prefix)-\(data.count)-\(signature)"
+    }
+
+    private static func downsampledImage(from data: Data) -> UIImage? {
+        let sourceOptions = [
+            kCGImageSourceShouldCache: false
+        ] as CFDictionary
+
+        guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions) else {
+            return nil
+        }
+
+        let thumbnailOptions = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelDimension
+        ] as CFDictionary
+
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions) else {
+            return nil
+        }
+
+        return UIImage(cgImage: cgImage)
+    }
+}
+
+private extension UIImage {
+    var cacheCost: Int {
+        guard let cgImage else { return 1 }
+        return cgImage.bytesPerRow * cgImage.height
     }
 }
 
@@ -201,7 +464,8 @@ struct MomentMediaView: View {
 
     var body: some View {
         Group {
-            if let data = media.photoData, let image = UIImage(data: data) {
+            if let data = media.photoData,
+               let image = ImageDecodeCache.image(for: data, key: ImageDecodeCache.cacheKey(forLocalData: data, prefix: "moment")) {
                 Image(uiImage: image)
                     .resizable()
                     .aspectRatio(contentMode: height != nil ? .fill : .fit)
@@ -209,29 +473,21 @@ struct MomentMediaView: View {
                     .frame(height: height)
                     .clipped()
             } else if let remotePhotoURL = media.remotePhotoURL {
-                AsyncImage(url: remotePhotoURL) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .aspectRatio(contentMode: height != nil ? .fill : .fit)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: height)
-                            .clipped()
-                            .background(
-                                GeometryReader { geo in
-                                    Color.clear.onAppear {
-                                        guard store.photoAspectRatioCache[remotePhotoURL.absoluteString] == nil,
-                                              geo.size.height > 0 else { return }
-                                        store.photoAspectRatioCache[remotePhotoURL.absoluteString] =
-                                            geo.size.width / geo.size.height
-                                    }
-                                }
-                            )
-                    default:
-                        mediaPlaceholder
+                RemoteDecodedImageView(
+                    url: remotePhotoURL,
+                    contentMode: height != nil ? .fill : .fit,
+                    onImageLoaded: { image in
+                        guard store.photoAspectRatioCache[remotePhotoURL.absoluteString] == nil,
+                              image.size.height > 0 else { return }
+                        store.photoAspectRatioCache[remotePhotoURL.absoluteString] =
+                            image.size.width / image.size.height
                     }
+                ) {
+                    mediaPlaceholder
                 }
+                .frame(maxWidth: .infinity)
+                .frame(height: height)
+                .clipped()
             } else {
                 mediaPlaceholder
             }
@@ -271,25 +527,26 @@ struct MomentMediaView: View {
     }
 }
 
-/// Renders the icon for a DrinkTag. If the drink has a named asset-catalog
-/// image (`imageName`), that is shown as a square image clipped to a circle.
-/// Otherwise falls back to the SF Symbol string in `symbol`.
+/// Renders the icon for a DrinkTag.
+/// Priority: emoji → SF Symbol fallback for custom drinks.
+/// The imageName path is retained for the Maddox easter-egg asset but
+/// is no longer used for standard catalog drinks now that emojis cover them.
 struct DrinkIconView: View {
     let drink: DrinkTag
     var size: CGFloat = 20
 
     var body: some View {
-        if let imageName = drink.imageName {
-            // Render at 1.45× the frame size before clipping so the subject
-            // fills the circle — PNG assets have surrounding transparency that
-            // makes them look small at 1:1. This matches the optical weight of
-            // SF Symbols rendered at size * 0.75 in the same pill.
+        if let emoji = drink.emoji ?? DrinkTag.resolvedEmoji(for: drink.name) {
+            Text(emoji)
+                .font(.system(size: size * 0.88))
+                .frame(width: size, height: size)
+        } else if let imageName = drink.imageName {
             Image(imageName)
                 .resizable()
                 .scaledToFill()
-                .frame(width: size * 1.45, height: size * 1.45)
+                .frame(width: size * 1.60, height: size * 1.60)
                 .clipShape(Circle())
-                .frame(width: size, height: size)   // collapse back to the layout slot
+                .frame(width: size, height: size)
         } else {
             Image(systemName: drink.symbol)
                 .font(.system(size: size * 0.75, weight: .semibold))
@@ -300,7 +557,7 @@ struct DrinkIconView: View {
 struct EmptyStateCard: View {
     @Environment(\.appAccent) private var accent
     let title: String
-    let detail: String
+    var detail: String? = nil
     let symbol: String
 
     var body: some View {
@@ -310,11 +567,13 @@ struct EmptyStateCard: View {
                     .font(.system(size: 28))
                     .foregroundStyle(accent)
                 Text(title)
-                    .font(.system(size: 24, weight: .bold, design: .serif))
+                    .font(AppTypography.sectionTitle)
                     .foregroundStyle(.white)
-                Text(detail)
-                    .font(.system(.subheadline, design: .rounded))
-                    .foregroundStyle(AppTheme.softText)
+                if let detail, !detail.isEmpty {
+                    Text(detail)
+                        .font(AppTypography.rowSubtitle)
+                        .foregroundStyle(AppTheme.softText)
+                }
             }
         }
     }

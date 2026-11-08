@@ -10,4 +10,5 @@ struct ContentView: View {
     ContentView()
         .environment(AppStore(backend: UnconfiguredBackend(environment: .placeholder)))
         .environment(PermissionCenter())
+        .environment(FeedAdStore())
 }

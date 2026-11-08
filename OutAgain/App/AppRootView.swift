@@ -5,36 +5,95 @@ import UserNotifications
 struct AppRootView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var hasLoadedAppContent: Bool {
+        store.bootstrapPhase == .ready && store.isLive && !store.shouldPresentMaintenanceScreen
+    }
+
+    private var defaultBackgroundPhase: DefaultBackgroundPhase {
+        hasLoadedAppContent ? .default2 : .default1
+    }
+
+    private var launchHandoffAnimation: Animation {
+        .easeOut(duration: reduceMotion ? 0.12 : 0.24)
+    }
 
     var body: some View {
         @Bindable var store = store
 
         ZStack {
-            // Three-way routing so the first cold-launch window shows a
-            // neutral splash instead of flashing the onboarding UI before
-            // bootstrap completes. Once bootstrap resolves, we route to
-            // either the live shell or onboarding based on real state.
-            switch (store.bootstrapPhase, store.isLive) {
-            case (.pending, _):
-                LaunchSplashView()
+            if store.shouldPresentMaintenanceScreen {
+                MaintenanceUnavailableView(
+                    title: store.maintenanceTitle,
+                    message: store.maintenanceMessage
+                )
                     .transition(.opacity)
-            case (.ready, true):
-                MainShellView()
-                    .transition(.opacity)
-            case (.ready, false):
-                OnboardingFlowView()
-                    .background(AmbientBackground())
-                    .transition(.opacity)
-            }
+            } else {
+                // Three-way routing so the first cold-launch window shows a
+                // neutral splash instead of flashing the onboarding UI before
+                // bootstrap completes. Once bootstrap resolves, we route to
+                // either the live shell or onboarding based on real state.
+                switch (store.bootstrapPhase, store.isLive) {
+                case (.pending, _):
+                    Color.clear
+                case (.ready, true):
+                    MainShellView()
+                        // Mount the ready feed at full opacity beneath the splash.
+                        // Only the outgoing cover fades, avoiding a dark dip.
+                        .transition(.asymmetric(insertion: .identity, removal: .opacity))
+                case (.ready, false):
+                    OnboardingFlowView()
+                        .transition(.opacity)
+                }
 
-            // In-app notification banner — floats above all content
-            InAppNotificationOverlay()
+                // In-app notification banner — floats above all content
+                InAppNotificationOverlay()
+                    .zIndex(1)
+
+                NightActivitySummaryOverlay()
+                    .zIndex(2.5)
+
+                AppAnnouncementOverlay()
+                    .zIndex(3)
+
+                if store.bootstrapPhase == .pending {
+                    LaunchSplashView()
+                        .background(AmbientBackground())
+                        .environment(\.defaultBackgroundPhase, .default1)
+                        .transition(.asymmetric(
+                            insertion: .identity,
+                            removal: .opacity.animation(launchHandoffAnimation)
+                        ))
+                        // Keep the outgoing splash above the shell's opaque
+                        // surfaces until its dissolve finishes.
+                        .zIndex(4)
+                        .allowsHitTesting(false)
+                }
+            }
         }
-        .animation(.easeInOut(duration: 0.22), value: store.bootstrapPhase)
+        // Keep the light field alive beneath route fades. Fading two opaque
+        // page backgrounds over black briefly darkens the handoff twice.
+        .background(AmbientBackground())
+        // Propagate theme to ALL children including LaunchSplashView so the
+        // splash background matches the user's chosen theme.
+        .environment(\.appAccent, store.accentColorChoice.color)
+        .environment(\.appBackgroundTheme, store.backgroundTheme)
+        .tint(store.accentColorChoice.color)
+        .background(DuoOrientationPolicyView())
+        .animation(launchHandoffAnimation, value: store.bootstrapPhase)
         .animation(.easeInOut(duration: 0.22), value: store.isLive)
-        .fullScreenCover(isPresented: $store.isPostFlowPresented) {
-            PostCaptureFlowView()
+        .animation(.easeInOut(duration: 0.22), value: store.shouldPresentMaintenanceScreen)
+        .fullScreenCover(isPresented: $store.isPostFlowPresented, onDismiss: {
+            store.finishPostFlowDismissal()
+        }) {
+            PostCaptureFlowView(
+                camera: store.sharedCamera,
+                presentationID: store.postFlowCameraPresentationID ?? UUID()
+            )
                 .environment(\.appAccent, store.accentColorChoice.color)
+                .environment(\.appBackgroundTheme, store.backgroundTheme)
+                .environment(\.defaultBackgroundPhase, defaultBackgroundPhase)
                 .tint(store.accentColorChoice.color)
         }
         // Maddox player is presented from the root AFTER the post flow cover
@@ -43,7 +102,11 @@ struct AppRootView: View {
         // onChange below fires and presents the player cleanly with no camera
         // visible behind it.
         .onChange(of: store.isPostFlowPresented) { _, isPresented in
-            if !isPresented && store.pendingMaddoxPlayer {
+            guard !isPresented else { return }
+
+            store.finishPostFlowDismissal()
+
+            if store.pendingMaddoxPlayer {
                 store.pendingMaddoxPlayer = false
                 // Small delay so the cover dismissal animation finishes
                 // before the sheet animates in.
@@ -52,18 +115,33 @@ struct AppRootView: View {
                 }
             }
         }
+        .onChange(of: store.shouldPresentMaintenanceScreen) { _, isActive in
+            guard isActive else { return }
+            store.isPostFlowPresented = false
+            store.isMaddoxPlayerPresented = false
+            store.pendingMaddoxPlayer = false
+        }
         .sheet(isPresented: $store.isMaddoxPlayerPresented) {
             MaddoxPlayerView()
                 .environment(\.appAccent, store.accentColorChoice.color)
                 .presentationDetents([.large])
-                .presentationDragIndicator(.hidden)
                 .presentationBackground(.black)
+                .appSheetDragHandle()
         }
-        .sheet(isPresented: $store.isLiveActivityPromptPresented) {
-            LiveActivityPromptSheet()
-                .environment(\.appAccent, store.accentColorChoice.color)
-                .tint(store.accentColorChoice.color)
+        .sheet(item: $store.notificationDestination) { destination in
+            switch destination {
+            case .post(let postID, let commentID):
+                ActivityPostDetailSheet(postID: postID, highlightedCommentID: commentID) { profile in
+                    store.notificationDestination = nil
+                    store.selectedTab = .home
+                    store.homeProfile = profile
+                }
+            case .recap(let recap):
+                NightRecapView(route: recap)
+            }
         }
+        // Apply outside presentation modifiers so sheets inherit the same phase.
+        .environment(\.defaultBackgroundPhase, defaultBackgroundPhase)
         .task {
             store.bootstrapFromBackendIfNeeded()
         }
@@ -77,6 +155,7 @@ struct AppRootView: View {
                 store.refreshOnForeground()
             case .background, .inactive:
                 store.stopForegroundPolling()
+                store.stopMaintenanceConfigPolling()
             @unknown default:
                 break
             }
@@ -90,21 +169,57 @@ struct AppRootView: View {
         // markActivityAsSeen() will mark rows read, which drives count to 0
         // via the onChange above, but this fires synchronously for zero lag.
         .onChange(of: store.selectedTab) { _, tab in
-            if tab == .activity {
+            if tab == .activity, !store.isViewerAdmin {
                 UNUserNotificationCenter.current().setBadgeCount(0)
             }
         }
     }
 }
 
-/// Shown during the first bootstrap, before we know whether the viewer is
-/// signed in. Deliberately minimal so this reads like the app background
-/// itself while bootstrap resolves, not a separate branded screen.
-private struct LaunchSplashView: View {
+private struct MaintenanceUnavailableView: View {
+    @Environment(AppStore.self) private var store
+    let title: String
+    let message: String
+
     var body: some View {
-        AmbientBackground()
-            .ignoresSafeArea()
+        VStack(spacing: 20) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 40, weight: .semibold))
+                .foregroundStyle(.orange)
+                .accessibilityHidden(true)
+
+            Text(title)
+                .font(AppTypography.sheetTitle)
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
+
+            Text(message)
+                .font(AppTypography.rowSubtitle)
+                .foregroundStyle(.white.opacity(0.8))
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 28)
+        }
+        .padding(.horizontal, AppLayout.screenPadding)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.black.ignoresSafeArea())
+        .ignoresSafeArea(.container, edges: store.isDuoDevice ? .all : [])
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// Shown during the first bootstrap, before we know whether the viewer is
+/// signed in. The frosted glass logo adapts to the user's themed background.
+private struct LaunchSplashView: View {
+    @Environment(AppStore.self) private var store
+
+    var body: some View {
+        LiquidGlassClinkLogo()
+            .frame(maxWidth: 220)
+            .padding(.horizontal, AppLayout.screenPadding)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // Duo reserves an asymmetric status area. Center the mark in the
+            // current display bounds, including through folds and rotations.
+            .ignoresSafeArea(.container, edges: store.isDuoDevice ? .all : [])
     }
 }
 
@@ -112,191 +227,148 @@ private struct MainShellView: View {
     @Environment(AppStore.self) private var store
 
     var body: some View {
-        ZStack {
-            // AmbientBackground lives here at the root, outside every
-            // NavigationStack and tab view. It is never re-created when
-            // the user switches tabs — the orbs keep animating continuously
-            // across the whole session.
-            AmbientBackground()
-                .ignoresSafeArea()
-
-            // Each tab gets its own NavigationStack so push state is
-            // preserved independently. We keep all four in the hierarchy
-            // simultaneously (opacity 0 when not selected) rather than
-            // using a switch, which destroys and recreates the view —
-            // and would restart the ambient background if it lived here.
-            ZStack {
-                HomeFeedView()
-                    .opacity(store.selectedTab == .home ? 1 : 0)
-                    .allowsHitTesting(store.selectedTab == .home)
-
-                AddFriendsSheet()
-                    .opacity(store.selectedTab == .friends ? 1 : 0)
-                    .allowsHitTesting(store.selectedTab == .friends)
-
-                ActivityView()
-                    .opacity(store.selectedTab == .activity ? 1 : 0)
-                    .allowsHitTesting(store.selectedTab == .activity)
-
-                ProfileView()
-                    .opacity(store.selectedTab == .profile ? 1 : 0)
-                    .allowsHitTesting(store.selectedTab == .profile)
-            }
+        Group {
+            if store.isDuoDevice { DuoShellView() }
+            else { PhoneMainShellView() }
         }
-        .environment(\.appAccent, store.accentColorChoice.color)
-        .tint(store.accentColorChoice.color)
-        .safeAreaInset(edge: .bottom) {
-            LiquidTabBar()
-                .padding(.horizontal, 20)
-                .padding(.top, 8)
-                .padding(.bottom, 8)
-        }
+        .modifier(ProfileSceneThemeScope())
     }
 }
 
-private struct LiquidTabBar: View {
+private struct DuoShellView: View {
     @Environment(AppStore.self) private var store
-    @Namespace private var tabSelectionNamespace
+    @Environment(PermissionCenter.self) private var permissions
+    @State private var layoutContinuity = DuoLayoutContinuity()
 
     var body: some View {
-        GlassEffectContainer(spacing: 0) {
-            navigationCluster
-        }
-    }
+        @Bindable var store = store
 
-    private var navigationCluster: some View {
-        HStack(spacing: 4) {
-            tabButton(
-                title: AppTab.home.title,
-                symbol: AppTab.home.symbol,
-                badgeCount: nil,
-                isSelected: store.selectedTab == .home,
-                action: { store.handleHomeTabTap() }
-            )
-
-            tabButton(
-                title: AppTab.friends.title,
-                symbol: AppTab.friends.symbol,
-                badgeCount: store.pendingIncomingRequestCount,
-                isSelected: store.selectedTab == .friends,
-                action: { store.selectedTab = .friends }
-            )
-
-            // Post sits mid-bar and intentionally reads as an action
-            // rather than a tab. Two greyed circles — one for the active
-            // tab's selection capsule and one around the Post glyph — was
-            // muddying the hierarchy. Dropped the surrounding capsule;
-            // differentiation now comes purely from the warm-gold color
-            // on the icon and label. The user's eye goes to gold before
-            // it reads the selection ring on whichever nav tab is active,
-            // preserving Post as the single call-to-action.
-            postTabButton
-
-            tabButton(
-                title: AppTab.activity.title,
-                symbol: AppTab.activity.symbol,
-                badgeCount: store.unreadNotificationCount,
-                isSelected: store.selectedTab == .activity,
-                action: { store.openNotifications() }
-            )
-
-            tabButton(
-                title: AppTab.profile.title,
-                symbol: AppTab.profile.symbol,
-                badgeCount: nil,
-                isSelected: store.selectedTab == .profile,
-                action: { store.selectedTab = .profile }
-            )
-        }
-        .frame(height: 62)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 8)
-        .background(.white.opacity(0.06), in: Capsule())
-        .overlay(Capsule().strokeBorder(AppTheme.line, lineWidth: 1))
-        .glassEffect(.regular, in: .capsule)
-    }
-
-    private func tabButton(
-        title: String,
-        symbol: String,
-        badgeCount: Int?,
-        isSelected: Bool,
-        action: @escaping () -> Void
-    ) -> some View {
-        let foregroundColor: Color = isSelected ? .white : AppTheme.softText
-
-        return Button(action: action) {
-            ZStack(alignment: .topTrailing) {
-                ZStack {
-                    if isSelected {
-                        Capsule()
-                            .fill(.white.opacity(0.12))
-                            .overlay(
-                                Capsule()
-                                    .strokeBorder(.white.opacity(0.18), lineWidth: 1)
-                            )
-                            .glassEffect(.regular.interactive(), in: .capsule)
-                            .matchedGeometryEffect(id: "tab_selection", in: tabSelectionNamespace)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 62)
-                    }
-
-                    VStack(spacing: 5) {
-                        Image(systemName: symbol)
-                            .font(.system(size: 18, weight: .semibold))
-
-                        Text(title)
-                            .font(.system(size: 11, weight: .semibold, design: .rounded))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.88)
-                    }
-                    .foregroundStyle(foregroundColor)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 62)
+        ZStack {
+            // Each tab owns one full-window background behind both panes.
+            TabView(selection: nativeTabSelection) {
+                Tab(
+                    store.isViewerAdmin ? "Posts" : AppTab.home.title,
+                    systemImage: AppTab.home.symbol,
+                    value: AppTab.home
+                ) {
+                    HomeFeedView()
+                        .environment(\.profileSceneTab, .home)
+                        .tint(store.accentColorChoice.color)
                 }
-                .frame(maxWidth: .infinity)
-                .frame(height: 62)
-                .contentShape(Capsule())
 
-                if let badgeCount, badgeCount > 0 {
-                    Text("\(badgeCount)")
-                        .font(.system(size: 10, weight: .bold, design: .rounded))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 4)
-                        .background(store.accentColorChoice.color, in: Capsule())
-                        .offset(x: -2, y: 4)
+                Tab(
+                    store.isViewerAdmin ? "Admin" : AppTab.activity.title,
+                    systemImage: store.isViewerAdmin ? "shield.lefthalf.filled" : AppTab.activity.symbol,
+                    value: AppTab.activity
+                ) {
+                    Group {
+                        if store.isViewerAdmin {
+                            AdminHomeView()
+                        } else {
+                            ActivityView()
+                        }
+                    }
+                    .environment(\.profileSceneTab, .activity)
+                    .tint(store.accentColorChoice.color)
+                }
+                .badge(activityBadge)
+
+                Tab(AppTab.friends.title, systemImage: AppTab.friends.symbol, value: AppTab.friends) {
+                    AddFriendsSheet()
+                        .environment(\.profileSceneTab, .friends)
+                        .tint(store.accentColorChoice.color)
+                }
+                .badge(store.pendingIncomingRequestCount > 0 ? Text("\(store.pendingIncomingRequestCount)") : nil)
+
+                Tab(AppTab.profile.title, systemImage: AppTab.profile.symbol, value: AppTab.profile) {
+                    ProfileView()
+                        .environment(\.profileSceneTab, .profile)
+                        .tint(store.accentColorChoice.color)
+                }
+
+                Tab(value: AppTab.post, role: postTabRole) {
+                    PostTabPlaceholderView()
+                } label: {
+                    Label {
+                        Text(AppTab.post.title)
+                    } icon: {
+                        Image(uiImage: (UIImage(systemName: AppTab.post.symbol) ?? UIImage())
+                            .withTintColor(UIColor(store.accentColorChoice.color), renderingMode: .alwaysOriginal))
+                    }
+                }
+            }
+            .tint(.white)
+            .background(DuoTabBarLayoutRecovery())
+        }
+        .environment(\.duoLayoutContinuity, layoutContinuity)
+        .background(DuoSceneLayoutObserver(continuity: layoutContinuity))
+        .environment(\.appAccent, store.accentColorChoice.color)
+        .tint(store.accentColorChoice.color)
+        .task {
+            guard !store.isLayoutPreview else { return }
+            // If the user skipped the onboarding permissions screen or
+            // notifications are still undecided, prompt now — right as they
+            // land on the home screen for the first time. This covers both
+            // new sign-ups who tapped past the permissions step and returning
+            // users whose prior install never surfaced the prompt.
+            // reregisterRemoteNotificationsIfAuthorized() is a no-op if
+            // already granted, so this is safe to call on every cold launch.
+            if permissions.notificationsStatus == .notDetermined {
+                await permissions.requestNotifications()
+            } else {
+                await permissions.reregisterRemoteNotificationsIfAuthorized()
+            }
+        }
+    }
+
+    private var nativeTabSelection: Binding<AppTab> {
+        Binding {
+            store.selectedTab
+        } set: { newTab in
+            let previousTab = store.selectedTab
+
+            switch newTab {
+            case .home:
+                store.handleHomeTabTap()
+            case .activity:
+                if store.isViewerAdmin {
+                    store.handleActivityTabTap()
+                    if store.adminReports.isEmpty {
+                        store.loadAdminReportsNextPage(reset: true)
+                    }
+                } else {
+                    store.handleActivityTabTap()
+                }
+            case .post:
+                store.openPostFlow()
+            case .friends:
+                store.handleFriendsTabTap()
+            case .admin:
+                store.handleAdminTabTap()
+            case .profile:
+                if previousTab == .profile {
+                    store.handleProfileTabTap()
+                } else {
+                    store.selectedTab = .profile
                 }
             }
         }
-        .buttonStyle(.plain)
-        .animation(.snappy(duration: 0.22), value: isSelected)
     }
 
-    /// Post is an *action*, not a navigation destination, so it renders
-    /// differently from `tabButton`: no selection capsule (which caused
-    /// the "two greyed circles" read when another tab was active),
-    /// no hit-area background fill, and warm-gold color applied to both
-    /// glyph and label. The icon sits slightly larger than sibling tabs
-    /// (20 vs 18) to reinforce that it's the primary CTA in the cluster
-    /// without requiring a separate container.
-    private var postTabButton: some View {
-        Button(action: { store.openPostFlow() }) {
-            VStack(spacing: 5) {
-                Image(systemName: "camera.fill")
-                    .font(.system(size: 20, weight: .bold))
+    private var postTabRole: TabRole {
+        if #available(iOS 27.0, *) { .prominent } else { .search }
+    }
 
-                Text("Post")
-                    .font(.system(size: 11, weight: .bold, design: .rounded))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.88)
-            }
-            .foregroundStyle(store.accentColorChoice.color)
-            .frame(maxWidth: .infinity)
-            .frame(height: 62)
-            .contentShape(Rectangle())
+    private var activityBadge: Text? {
+        if store.isViewerAdmin {
+            return store.openAdminReportCount > 0 ? Text("\(store.openAdminReportCount)") : nil
         }
-        .buttonStyle(.plain)
+        return store.unreadNotificationCount > 0 ? Text("\(store.unreadNotificationCount)") : nil
     }
+}
 
+private struct PostTabPlaceholderView: View {
+    var body: some View {
+        Color.clear
+    }
 }

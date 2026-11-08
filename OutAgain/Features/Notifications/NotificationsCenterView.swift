@@ -7,178 +7,398 @@ struct ActivityView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.appAccent) private var accent
     @State private var activeSheet: ActiveNotificationSheet?
+    @State private var selectedNotificationID: UUID?
+    @State private var isDuoExpanded = false
+    @State private var profileNavigationTarget: UserProfile?
     @State private var isShowingRefreshConfirmation = false
+    @State private var isTabRefreshing = false
+    @State private var isTitleScrolled = false
+    @State private var didTriggerPullRefresh = false
 
     private enum ActiveNotificationSheet: Identifiable {
         /// Show the post card; optionally auto-open comments with a highlighted comment.
         case post(UUID, highlightedCommentID: UUID?)
-        case friendProfile(UserProfile)
+        case announcement(AppNotification)
 
         var id: String {
             switch self {
             case .post(let postID, let commentID):
                 return "post-\(postID.uuidString)-\(commentID?.uuidString ?? "none")"
-            case .friendProfile(let profile):
-                return "profile-\(profile.id.uuidString)"
+            case .announcement(let notification):
+                return "announcement-\(notification.id.uuidString)"
             }
         }
     }
 
     // MARK: - Grouping
 
-    private enum NotificationGroup: String, CaseIterable {
-        case today = "Today"
-        case thisWeek = "This Week"
-        case thisMonth = "This Month"
-        case older = "Older"
-    }
-
-    private func group(for date: Date, now: Date = Date()) -> NotificationGroup {
-        let cal = Calendar.current
-        if cal.isDateInToday(date) { return .today }
-        if let weekAgo = cal.date(byAdding: .day, value: -7, to: now), date >= weekAgo { return .thisWeek }
-        if let monthAgo = cal.date(byAdding: .month, value: -1, to: now), date >= monthAgo { return .thisMonth }
-        return .older
-    }
-
-    private var groupedNotifications: [(group: NotificationGroup, items: [AppNotification])] {
-        let now = Date()
-        var buckets: [NotificationGroup: [AppNotification]] = [:]
-        for n in store.notifications {
-            let g = group(for: n.createdAt, now: now)
-            buckets[g, default: []].append(n)
+    private func groupedNotifications(at now: Date) -> [(group: NotificationDates.Group, items: [AppNotification])] {
+        let buckets = Dictionary(grouping: store.notifications) {
+            NotificationDates.group(for: $0.createdAt, now: now)
         }
-        return NotificationGroup.allCases.compactMap { g in
-            guard let items = buckets[g], !items.isEmpty else { return nil }
-            return (group: g, items: items)
+        return NotificationDates.Group.allCases.compactMap { group in
+            guard let items = buckets[group], !items.isEmpty else { return nil }
+            return (group: group, items: items.sorted {
+                $0.createdAt == $1.createdAt ? $0.id.uuidString < $1.id.uuidString : $0.createdAt > $1.createdAt
+            })
         }
     }
 
+    @ViewBuilder
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                // Header row: title + clear-all button
+        TimelineView(.everyMinute) { _ in
+            // The initial timeline tick can be the start of this minute.
+            // Use the actual clock so newly opened rows are not up to 59s young.
+            let now = Date()
+            if store.isDuoDevice {
+                duoActivity(at: now)
+            } else {
+                phoneActivity(at: now)
+            }
+        }
+    }
+
+    // Native list rows provide full-swipe dismissal and arbitrate horizontal
+    // swipes against vertical scrolling, including on iOS 26.
+    private func activityList(
+        at now: Date,
+        horizontalPadding: CGFloat,
+        topPadding: CGFloat,
+        maximumWidth: CGFloat = .infinity
+    ) -> some View {
+        List {
+            Group {
+                if store.notifications.isEmpty {
+                    emptyState
+                        .frame(maxWidth: maximumWidth)
+                        .frame(maxWidth: .infinity)
+                        .listRowInsets(EdgeInsets(top: 0, leading: horizontalPadding, bottom: 0, trailing: horizontalPadding))
+                } else {
+                    ForEach(groupedNotifications(at: now), id: \.group) { section in
+                        Text(section.group.rawValue)
+                            .font(AppTypography.metadataEmphasis)
+                            .foregroundStyle(AppTheme.softText)
+                            .textCase(.uppercase)
+                            .tracking(1.2)
+                            .accessibilityAddTraits(.isHeader)
+                            .frame(maxWidth: maximumWidth, alignment: .leading)
+                            .frame(maxWidth: .infinity)
+                            .listRowInsets(EdgeInsets(top: 6, leading: horizontalPadding, bottom: 14, trailing: horizontalPadding))
+
+                        ForEach(section.items) { notification in
+                            notificationRow(notification, now: now)
+                                .frame(maxWidth: maximumWidth)
+                                .frame(maxWidth: .infinity)
+                                .listRowInsets(EdgeInsets(top: 0, leading: horizontalPadding, bottom: 12, trailing: horizontalPadding))
+                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                    Button(role: .destructive) {
+                                        withAnimation(.snappy(duration: 0.24)) {
+                                            store.dismissNotification(notification)
+                                            if selectedNotificationID == notification.id {
+                                                selectedNotificationID = nil
+                                            }
+                                        }
+                                    } label: {
+                                        Label("Dismiss", systemImage: "trash")
+                                    }
+                                }
+                        }
+                    }
+                }
+            }
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+        }
+        .listStyle(.plain)
+        .listRowSpacing(0)
+        .environment(\.defaultMinListRowHeight, 0)
+        .contentMargins(.top, topPadding, for: .scrollContent)
+        .contentMargins(.bottom, AppLayout.tabBarClearance, for: .scrollContent)
+        .frame(maxWidth: .infinity)
+        .onScrollGeometryChange(for: CGFloat.self) { geometry in
+            -(geometry.contentOffset.y + geometry.contentInsets.top)
+        } action: { _, offset in
+            isTitleScrolled = offset < -8
+            if offset > 60 && !isTabRefreshing && !didTriggerPullRefresh {
+                didTriggerPullRefresh = true
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                Task { await runManualRefresh() }
+            }
+            if offset <= 0 { didTriggerPullRefresh = false }
+        }
+    }
+
+    private func phoneActivity(at now: Date) -> some View {
+        NavigationStack {
+            activityList(at: now, horizontalPadding: 14, topPadding: 12)
+            #if DEBUG
+            .modifier(DuoScrollPreviewControls())
+            #endif
+            .safeAreaInset(edge: .top, spacing: 0) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("Activity")
-                        .font(.system(size: 32, weight: .bold, design: .serif))
-                        .foregroundStyle(.white)
-
+                    ScrollingPageTitle(title: "Activity", isScrolled: isTitleScrolled)
                     Spacer()
-
                     if !store.notifications.isEmpty {
                         Button("Clear All") {
                             withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
                                 store.clearAllNotifications()
                             }
                         }
+                        .font(AppTypography.button)
+                        .foregroundStyle(.white)
                         .buttonStyle(.glass)
                     }
                 }
-
-                if store.notifications.isEmpty {
-                    emptyState
-                } else {
-                    LazyVStack(alignment: .leading, spacing: 12, pinnedViews: .sectionHeaders) {
-                        ForEach(groupedNotifications, id: \.group) { section in
-                            Section {
-                                ForEach(section.items) { notification in
-                                    notificationRow(notification)
-                                }
-                            } header: {
-                                Text(section.group.rawValue)
-                                    .font(.system(.caption, design: .rounded, weight: .semibold))
-                                    .foregroundStyle(AppTheme.softText)
-                                    .textCase(.uppercase)
-                                    .tracking(1.2)
-                                    .padding(.top, 6)
-                                    .padding(.bottom, 2)
-                            }
-                        }
-                    }
-                }
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 12)
-            .padding(.bottom, 120)
-        }
-        // Fill the full available height so the ScrollView has a definite
-        // frame to scroll within. Without this, a bare ScrollView in a ZStack
-        // sizes to its content and is never scrollable. NavigationStack-wrapped
-        // tabs (Home, Profile) get this for free; Activity is nav-stack-free
-        // so we apply it explicitly.
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .refreshable {
-            await performManualRefresh()
-        }
-        .scrollIndicators(.hidden)
-        // Consistent with Home / Friends / Profile: hide the default
-        // scroll content background before applying the ambient so the
-        // gradient reaches the edges regardless of NavigationStack
-        // chrome. Activity worked before this line because its layout
-        // happened to avoid the default fill, but the explicit modifier
-        // guards against future SwiftUI behavior drift.
-        .scrollContentBackground(.hidden)
-        .background(Color.clear)
-        .onAppear {
-            if store.selectedTab == .activity {
-                store.markActivityAsSeen()
-            }
-        }
-        .onChange(of: store.selectedTab) { _, newTab in
-            if newTab == .activity {
-                store.markActivityAsSeen()
-            }
-        }
-        .overlay(alignment: .top) {
-            if isShowingRefreshConfirmation {
-                HStack(spacing: 8) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(accent)
-                    Text("Refreshed")
-                        .font(.system(.subheadline, design: .rounded, weight: .semibold))
-                        .foregroundStyle(.white)
-                }
                 .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(.black.opacity(0.72), in: Capsule())
-                .overlay(
-                    Capsule()
-                        .strokeBorder(AppTheme.line, lineWidth: 1)
-                )
-                .padding(.top, 8)
-                .transition(.move(edge: .top).combined(with: .opacity))
+                .padding(.top, 12)
+                .padding(.bottom, 8)
             }
-        }
-        .sheet(item: $activeSheet) { sheet in
-            switch sheet {
-            case .post(let postID, let highlightedCommentID):
-                ActivityPostDetailSheet(
-                    postID: postID,
-                    highlightedCommentID: highlightedCommentID,
-                    onAuthorTap: { profile in
-                        activeSheet = nil
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                            if profile.id == store.viewer?.id {
-                                store.selectedTab = .profile
-                            } else {
-                                activeSheet = .friendProfile(profile)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .scrollIndicators(.hidden)
+            .scrollBounceBehavior(.always, axes: .vertical)
+            // Match Profile's ambient surface inside the tab content so Activity
+            // does not depend on the native tab container staying transparent.
+            .scrollContentBackground(.hidden)
+            .modifier(MainPageSurface())
+            .overlay(alignment: .top) {
+                if isTabRefreshing {
+                    MainTabRefreshIndicator()
+                        .padding(.top, 8)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
+            .onAppear {
+                if store.selectedTab == .activity {
+                    store.markActivityAsSeen()
+                }
+            }
+            .onChange(of: store.selectedTab) { _, newTab in
+                if newTab == .activity {
+                    store.markActivityAsSeen()
+                }
+            }
+            .task(id: store.activityTabSelectionTrigger) {
+                guard store.selectedTab == .activity,
+                      store.activityTabSelectionTrigger > 0
+                else { return }
+
+                await refreshActivityData()
+            }
+            .overlay(alignment: .top) {
+                if isShowingRefreshConfirmation {
+                    HStack(spacing: 8) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(accent)
+                        Text("Refreshed")
+                            .font(AppTypography.button)
+                            .foregroundStyle(.white)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(.black.opacity(0.72), in: Capsule())
+                    .overlay(
+                        Capsule()
+                            .strokeBorder(AppTheme.line, lineWidth: 1)
+                    )
+                    .padding(.top, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
+            .sheet(item: $activeSheet) { sheet in
+                switch sheet {
+                case .announcement(let notification):
+                    AnnouncementNotificationSheet(notification: notification)
+                case .post(let postID, let highlightedCommentID):
+                    ActivityPostDetailSheet(
+                        postID: postID,
+                        highlightedCommentID: highlightedCommentID,
+                        onAuthorTap: { profile in
+                            activeSheet = nil
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                                openProfile(profile)
                             }
                         }
-                    }
-                )
-                .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
-            case .friendProfile(let profile):
-                FriendProfileView(profile: profile)
+                    )
                     .presentationDetents([.large])
-                    .presentationDragIndicator(.visible)
+                    .appSheetDragHandle(contentWidth: PostDetailPresentation.sheetWidth)
+                }
+            }
+            .navigationDestination(item: $profileNavigationTarget) { profile in
+                FriendProfileView(profile: profile, presentationStyle: .embedded)
             }
         }
     }
 
-    private func performManualRefresh() async {
-        await store.refreshAppData(silenceErrors: true)
+    private func duoActivity(at now: Date) -> some View {
+        DuoPageLayout(isExpanded: $isDuoExpanded) {
+            NavigationStack {
+                activityList(
+                    at: now,
+                    horizontalPadding: AppLayout.screenPadding,
+                    topPadding: AppLayout.secondaryPageTopPadding,
+                    maximumWidth: isDuoExpanded ? .infinity : AppLayout.phoneColumnMaximumWidth
+                )
+                #if DEBUG
+                .modifier(DuoScrollPreviewControls())
+                #endif
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .toolbar {
+                    if !store.notifications.isEmpty {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            clearActivityButton
+                        }
+                    }
+                }
+                .toolbarBackground(.hidden, for: .navigationBar)
+                .navigationBarTitleDisplayMode(.inline)
+                .modifier(DuoPageHeader(title: "Activity", isScrolled: isTitleScrolled))
+                .modifier(DuoPageViewport())
+                .scrollIndicators(.hidden)
+                .defaultScrollAnchor(.top, for: .sizeChanges)
+                .scrollBounceBehavior(.always, axes: .vertical)
+                // Match Profile's ambient surface inside the tab content so Activity
+                // does not depend on the native tab container staying transparent.
+                .scrollContentBackground(.hidden)
+                .modifier(MainPageSurface())
+                .overlay(alignment: .top) {
+                    if isTabRefreshing {
+                        MainTabRefreshIndicator()
+                            .padding(.top, 8)
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+                }
+                .onAppear {
+                    if store.selectedTab == .activity {
+                        store.markActivityAsSeen()
+                    }
+                }
+                .onChange(of: store.selectedTab) { _, newTab in
+                    if newTab == .activity {
+                        store.markActivityAsSeen()
+                    }
+                }
+                .task(id: store.activityTabSelectionTrigger) {
+                    guard store.selectedTab == .activity,
+                        store.activityTabSelectionTrigger > 0
+                    else { return }
 
+                    await refreshActivityData()
+                }
+                .overlay(alignment: .top) {
+                    if isShowingRefreshConfirmation {
+                        HStack(spacing: 8) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(accent)
+                            Text("Refreshed")
+                                .font(AppTypography.button)
+                                .foregroundStyle(.white)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(.black.opacity(0.72), in: Capsule())
+                        .overlay(
+                            Capsule()
+                                .strokeBorder(AppTheme.line, lineWidth: 1)
+                        )
+                        .padding(.top, 8)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+                }
+                .sheet(item: $activeSheet) { sheet in
+                    switch sheet {
+                    case .announcement(let notification):
+                        AnnouncementNotificationSheet(notification: notification)
+                    case .post(let postID, let highlightedCommentID):
+                        ActivityPostDetailSheet(
+                            postID: postID,
+                            highlightedCommentID: highlightedCommentID,
+                            onAuthorTap: { profile in
+                                activeSheet = nil
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                                    openProfile(profile)
+                                }
+                            }
+                        )
+                        .presentationDetents([.large])
+                        .appSheetDragHandle(contentWidth: PostDetailPresentation.sheetWidth)
+                    }
+                }
+                .navigationDestination(item: $profileNavigationTarget) { profile in
+                    FriendProfileView(profile: profile, presentationStyle: .embedded)
+                        .modifier(DuoPageViewport(extendsUnderBottomBar: false))
+                }
+            }
+        } companion: {
+            if let notification = selectedNotification {
+                ActivityCompanionDetail(notification: notification)
+                    .id(notification.id)
+            } else {
+                DuoCompanionPlaceholder(
+                    title: "All caught up",
+                    symbol: "bell.badge")
+            }
+        }
+        .onChange(of: isDuoExpanded) { _, expanded in
+            if expanded { activeSheet = nil }
+        }
+    }
+
+    private var clearActivityButton: some View {
+        Button("Clear All", systemImage: "trash") {
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                store.clearAllNotifications()
+            }
+        }
+        .labelStyle(.iconOnly)
+        .accessibilityIdentifier("activity.clearAll")
+    }
+
+    private var selectedNotification: AppNotification? {
+        if let selectedNotificationID,
+           let selected = store.notifications.first(where: { $0.id == selectedNotificationID }) {
+            return selected
+        }
+        return store.notifications.max(by: { $0.createdAt < $1.createdAt })
+    }
+
+    private func showPost(_ postID: UUID, highlightedCommentID: UUID?) {
+        activeSheet = .post(postID, highlightedCommentID: highlightedCommentID)
+    }
+
+    private func openProfile(_ profile: UserProfile) {
+        if profile.id == store.viewer?.id {
+            store.selectedTab = .profile
+        } else {
+            profileNavigationTarget = profile
+        }
+    }
+
+    private func runManualRefresh() async {
+        let refreshStartedAt = Date()
+        await MainActor.run {
+            withAnimation(.easeInOut(duration: 0.18)) {
+                isTabRefreshing = true
+            }
+        }
+
+        await refreshActivityData()
+        await MainTabRefreshFeedback.waitForMinimumVisibleDuration(since: refreshStartedAt)
+
+        await MainActor.run {
+            withAnimation(.easeInOut(duration: 0.18)) {
+                isTabRefreshing = false
+            }
+        }
+
+        await showRefreshConfirmation()
+    }
+
+    private func refreshActivityData() async {
+        await store.refreshAppData(silenceErrors: true)
+        store.markActivityAsSeen()
+    }
+
+    private func showRefreshConfirmation() async {
         await MainActor.run {
             withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
                 isShowingRefreshConfirmation = true
@@ -200,17 +420,43 @@ struct ActivityView: View {
                 Image(systemName: "bell.slash.fill")
                     .font(.system(size: 22, weight: .semibold))
                     .foregroundStyle(store.accentColorChoice.color.opacity(0.85))
-                Text("Nothing yet tonight")
-                    .font(.system(.title3, design: .rounded, weight: .semibold))
+                Text("No activity yet")
+                    .font(AppTypography.sectionTitle)
                     .foregroundStyle(.white)
-                Text("Friend posts, reactions, and requests land here.")
-                    .font(.system(.subheadline, design: .rounded))
-                    .foregroundStyle(AppTheme.softText)
             }
         }
     }
 
-    private func notificationRow(_ notification: AppNotification) -> some View {
+    /// Renders the notification title with the verified badge immediately after
+    /// the actor's display name, so it reads "Maddox ✓ replied to your comment"
+    /// rather than appending the badge at the sentence end.
+    @ViewBuilder
+    private func notificationTitle(_ notification: AppNotification, now: Date) -> some View {
+        let actor = notification.actor
+        let isVerified = actor?.isVerified == true
+        let actorName = actor?.displayName ?? ""
+        let title = notification.headline(at: now)
+
+        if isVerified, !actorName.isEmpty, title.hasPrefix(actorName) {
+            let remainder = String(title.dropFirst(actorName.count))
+            (Text(actorName).foregroundStyle(.white)
+                + Text(" ")
+                + Text(Image(systemName: "checkmark.seal.fill"))
+                    .font(.system(size: 11, weight: .bold))
+                    .baselineOffset(2)
+                + Text(remainder).foregroundStyle(.white))
+                .font(AppTypography.rowTitle)
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.leading)
+        } else {
+            Text(title)
+                .font(AppTypography.rowTitle)
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.leading)
+        }
+    }
+
+    private func notificationRow(_ notification: AppNotification, now: Date) -> some View {
         Button {
             openNotification(notification)
         } label: {
@@ -227,19 +473,12 @@ struct ActivityView: View {
                     }
 
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(notification.title)
-                            .font(.system(.headline, design: .rounded, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .multilineTextAlignment(.leading)
+                        notificationTitle(notification, now: now)
 
-                        Text(notification.detail)
-                            .font(.system(.subheadline, design: .rounded))
+                        Text(NotificationDates.activityLabel(for: notification.createdAt, now: now))
+                            .accessibilityLabel(notification.createdAt.formatted(date: .complete, time: .shortened))
+                            .font(AppTypography.caption)
                             .foregroundStyle(AppTheme.softText)
-                            .lineLimit(2)
-
-                        Text(Self.coarseRelativeLabel(for: notification.createdAt))
-                            .font(.system(.caption, design: .rounded))
-                            .foregroundStyle(store.accentColorChoice.color.opacity(0.82))
                     }
 
                     Spacer()
@@ -251,30 +490,42 @@ struct ActivityView: View {
                     }
                 }
             }
+            .contentShape(RoundedRectangle(cornerRadius: AppLayout.panelRadius, style: .continuous))
         }
         .buttonStyle(.plain)
     }
 
     private func openNotification(_ notification: AppNotification) {
+        selectedNotificationID = notification.id
+        if notification.kind == .nightRecap {
+            store.openNightRecap(notification)
+            return
+        }
+        guard !isDuoExpanded else { return }
         switch notification.kind {
         case .friendRequest, .friendAccepted:
-            // Route to the Friends tab showing pending requests so the
-            // viewer can accept/decline without hunting for the right screen.
-            store.friendsPageMode = .people
-            store.selectedTab = .friends
-        case .comment, .photoReply:
+            // Route to People so the viewer can accept/decline without
+            // hunting for the right screen.
+            store.handleFriendsTabTap()
+        case .profileVerified:
+            store.selectedTab = .profile
+        case .announcement:
+            activeSheet = .announcement(notification)
+        case .nightRecap:
+            break
+        case .comment, .photoReply, .commentLike, .commentTagged:
             // Show the post first for context, then auto-open the comment
-            // thread on top so the user sees what was commented on.
+            // thread on top so the user sees the exact comment in context.
             if let postID = notification.postID {
-                activeSheet = .post(postID, highlightedCommentID: notification.commentID)
+                showPost(postID, highlightedCommentID: notification.commentID)
             } else if let actor = notification.actor {
-                activeSheet = .friendProfile(actor)
+                openProfile(actor)
             }
         case .reaction, .friendPost, .venuePulse, .tagged, .sharedMoment, .nearby:
             if let postID = notification.postID {
-                activeSheet = .post(postID, highlightedCommentID: nil)
+                showPost(postID, highlightedCommentID: nil)
             } else if let actor = notification.actor {
-                activeSheet = .friendProfile(actor)
+                openProfile(actor)
             }
         case .groupAdded:
             // Route to the Home tab where the group strip lives so the
@@ -282,6 +533,7 @@ struct ActivityView: View {
             store.selectedTab = .home
         }
     }
+
 
     /// Largest-unit-only relative label. Under a minute reads "now"; below an
     /// hour, minutes; below a day, hours; otherwise days. Deliberately drops
@@ -310,11 +562,12 @@ struct ActivityView: View {
 // Back-compat alias so callers using the old name don't break mid-refactor.
 typealias NotificationsCenterView = ActivityView
 
+
 /// Post detail sheet that presents the comment thread on top of itself
 /// rather than using the dismiss-then-reopen two-step. Owns its own
 /// comment sheet state so tapping "Comment" stacks the thread sheet
 /// directly over the post without any visible transition gap.
-private struct ActivityPostDetailSheet: View {
+struct ActivityPostDetailSheet: View {
     @Environment(AppStore.self) private var store
 
     let postID: UUID
@@ -325,45 +578,186 @@ private struct ActivityPostDetailSheet: View {
 
     @State private var commentSheetPostID: UUID?
     @State private var highlightComment: UUID?
+    /// Tracks whether we've kicked off a feed refresh because the requested
+    /// post isn't in the local cache. Without this, notifications opening
+    /// older posts (or posts the viewer hasn't loaded recently) showed an
+    /// empty sheet — just the "Post" nav title with nothing inside, since
+    /// the body silently bailed when `store.posts.first(where:)` returned nil.
+    @State private var didAttemptTargetedPostLoad = false
+    @State private var isLoadingPost = false
+    @State private var didAutoOpenCommentThread = false
+    @State private var didRefreshPost = false
+    @State private var displayedPost: MomentPost?
+
+    private var resolvedPost: MomentPost? {
+        store.livePost(matching: postID)
+    }
+
+    private var postForDisplay: MomentPost? {
+        displayedPost ?? resolvedPost
+    }
+
+    private var highlightedCommentIsLoaded: Bool {
+        guard let highlightedCommentID else { return true }
+        return resolvedPost?.comments.contains(where: { $0.id == highlightedCommentID }) == true
+    }
 
     var body: some View {
+        ZStack {
         NavigationStack {
             ScrollView {
-                if let post = store.posts.first(where: { $0.id == postID }) {
+                if let post = postForDisplay {
                     MomentPostCard(
                         post: post,
                         isFocused: true,
+                        usesLiveStoreUpdates: didRefreshPost,
                         onCommentTap: {
                             highlightComment = nil
                             commentSheetPostID = post.id
                         },
                         onAuthorTap: onAuthorTap
                     )
-                    .padding(.horizontal, 16)
-                    .padding(.top, 8)
+                    .modifier(PostDetailColumn())
+                    .padding(.horizontal, store.isDuoDevice ? AppLayout.screenPadding : 0)
+                    .padding(.top, store.isDuoDevice ? 12 : 36)
                     .padding(.bottom, 32)
+                    .transaction { transaction in
+                        transaction.animation = nil
+                    }
+                } else {
+                    // Post isn't in the local cache — kicked off a feed
+                    // refresh in `.task` below, show a loading state until
+                    // the refresh either finds the post or finishes empty.
+                    postUnavailableState
+                        .padding(.horizontal, 16)
+                        .padding(.top, 80)
                 }
             }
             .scrollIndicators(.hidden)
-            .background(AmbientBackground())
-            .navigationTitle("Post")
-            .navigationBarTitleDisplayMode(.inline)
-            .sheet(item: $commentSheetPostID) { sheetPostID in
-                CommentThreadSheet(postID: sheetPostID, highlightedCommentID: highlightComment)
-                    .presentationDetents([.medium, .large])
-                    .presentationDragIndicator(.visible)
+            .scrollBounceBehavior(.basedOnSize, axes: .vertical)
+            .modifier(MainPageSurface())
+            .modifier(DuoModalNavigation(title: "Post"))
+            .navigationDestination(item: Binding(
+                get: { store.isDuoDevice ? commentSheetPostID : nil },
+                set: { commentSheetPostID = $0 }
+            )) { sheetPostID in
+                CommentThreadSheet(
+                    postID: sheetPostID,
+                    highlightedCommentID: highlightComment,
+                    initialPost: postForDisplay,
+                    isEmbedded: true
+                )
+                .modifier(MainPageSurface())
+                .navigationTitle("Comments")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbarBackground(.hidden, for: .navigationBar)
+            }
+            .sheet(item: Binding(
+                get: { store.isDuoDevice ? nil : commentSheetPostID },
+                set: { commentSheetPostID = $0 }
+            )) { sheetPostID in
+                CommentThreadSheet(
+                    postID: sheetPostID,
+                    highlightedCommentID: highlightComment,
+                    initialPost: postForDisplay
+                )
+                    // Use .large here so the comment sheet fully covers the
+                    // ActivityPostDetailSheet beneath it. A fractional detent
+                    // leaves the parent sheet's nav bar visible behind the
+                    // comment sheet, causing visual overlap.
+                    .presentationDetents([.large])
+                    .appSheetDragHandle()
+            }
+            .task(id: postID) {
+                guard !didAttemptTargetedPostLoad else { return }
+                didAttemptTargetedPostLoad = true
+                if displayedPost == nil {
+                    displayedPost = resolvedPost
+                }
+
+                // Notification targets must always hit the server. A cached
+                // post can be missing the fresh like/comment/tag that caused
+                // the notification, so ensure + refresh are intentionally
+                // collapsed into this one path.
+                isLoadingPost = true
+                await store.refreshPostFromNotification(
+                    postID: postID,
+                    commentID: highlightedCommentID
+                )
+                if let refreshedPost = resolvedPost {
+                    displayedPost = refreshedPost
+                }
+                didRefreshPost = true
+                isLoadingPost = false
+                autoOpenCommentThreadIfReady()
             }
             .onAppear {
+                if displayedPost == nil {
+                    displayedPost = resolvedPost
+                }
                 // If this sheet was opened from a comment notification, give
                 // the post a moment to render then stack the comment thread
                 // on top — so the user sees the post for context first.
-                if highlightedCommentID != nil {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
-                        highlightComment = highlightedCommentID
-                        commentSheetPostID = postID
-                    }
+                autoOpenCommentThreadIfReady()
+            }
+            .onChange(of: resolvedPost?.id) { _, _ in
+                if displayedPost == nil {
+                    displayedPost = resolvedPost
                 }
+                autoOpenCommentThreadIfReady()
+            }
+            .onChange(of: highlightedCommentIsLoaded) { _, _ in
+                autoOpenCommentThreadIfReady()
+            }
+            .onChange(of: didRefreshPost) { _, _ in
+                autoOpenCommentThreadIfReady()
             }
         }
+        }
+        .modifier(DuoSheetSurface())
+        .modifier(PostDetailPresentation())
+    }
+
+    private func autoOpenCommentThreadIfReady() {
+        guard highlightedCommentID != nil,
+              resolvedPost != nil,
+              highlightedCommentIsLoaded,
+              didRefreshPost,
+              !isLoadingPost,
+              !didAutoOpenCommentThread
+        else { return }
+
+        didAutoOpenCommentThread = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+            highlightComment = highlightedCommentID
+            commentSheetPostID = postID
+        }
+    }
+
+    @ViewBuilder
+    private var postUnavailableState: some View {
+        VStack(spacing: 14) {
+            if isLoadingPost || !didAttemptTargetedPostLoad {
+                ProgressView()
+                    .tint(.white.opacity(0.7))
+                    .scaleEffect(1.1)
+                Text("Loading post…")
+                    .font(AppTypography.button)
+                    .foregroundStyle(.white.opacity(0.75))
+            } else {
+                Image(systemName: "exclamationmark.bubble")
+                    .font(.system(size: 32, weight: .light))
+                    .foregroundStyle(.white.opacity(0.45))
+                Text("Post unavailable")
+                    .font(AppTypography.rowTitle)
+                    .foregroundStyle(.white.opacity(0.85))
+                Text("The post may have been removed or is no longer visible to you.")
+                    .font(AppTypography.rowSubtitle)
+                    .foregroundStyle(.white.opacity(0.55))
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 280)
+            }
+        }
+        .frame(maxWidth: .infinity)
     }
 }

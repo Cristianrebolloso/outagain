@@ -1,24 +1,63 @@
 import Foundation
+import SwiftUI
 import UIKit
 
 extension AppStore {
-    private var todayPromptDayKey: String {
-        let formatter = DateFormatter()
-        formatter.calendar = Calendar.current
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: Date())
-    }
-
     func openPostFlow() {
+        guard !isPostFlowPresented else { return }
+        postFlowDismissalRepinTask?.cancel()
+        postFlowDismissalRepinTask = nil
+        didPublishDuringPostFlow = false
         resetDraft()
-        selectedTab = .home
+        // Sync our binding to .post so SwiftUI agrees with iOS's internal
+        // search-tab selection. Without this, our binding stays on the
+        // previous tab while iOS thinks the search tab is selected, and the
+        // dismissal-time write to selectedTab isn't a real transition — so
+        // iOS never deselects the search tab and the user gets stranded on
+        // the empty placeholder. The didSet on selectedTab skips updating
+        // lastRegularTab when the value is .post, so the previous tab is
+        // preserved for the dismissal route.
+        selectedTab = .post
+        let cameraPresentationID = UUID()
+        postFlowCameraPresentationID = sharedCamera.beginPresentation(id: cameraPresentationID)
+        // Pre-warm the camera before the cover animation starts.
+        // prepare() is idempotent — if the session is already running (second
+        // open in the same app session) it calls startSessionIfNeeded() only.
+        if !isLayoutPreview { Task { await sharedCamera.prepare(supportsSubjectPreview: isDuoDevice) } }
         isPostFlowPresented = true
     }
 
     func closePostFlow() {
         isPostFlowPresented = false
+        finishPostFlowDismissal()
+    }
+
+    func finishPostFlowDismissal() {
+        let target: AppTab = didPublishDuringPostFlow ? .home : lastRegularTab
+        selectedTab = target
+        if target == .home {
+            feedScope = .friends
+            ensureSelectedPresenceCluster()
+        }
+        didPublishDuringPostFlow = false
         resetDraft()
+
+        // The search-role Tab can momentarily reselect itself after the
+        // cover dismisses. Re-pin selectedTab across the dismissal frames
+        // so backing out doesn't strand the user on the empty placeholder.
+        postFlowDismissalRepinTask?.cancel()
+        postFlowDismissalRepinTask = Task { @MainActor in
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            if !isPostFlowPresented, selectedTab == .post { selectedTab = target }
+            try? await Task.sleep(for: .milliseconds(80))
+            guard !Task.isCancelled else { return }
+            if !isPostFlowPresented, selectedTab == .post { selectedTab = target }
+            try? await Task.sleep(for: .milliseconds(260))
+            guard !Task.isCancelled else { return }
+            if !isPostFlowPresented, selectedTab == .post { selectedTab = target }
+            postFlowDismissalRepinTask = nil
+        }
     }
 
     func applyCapturedPhoto(_ data: Data?, lensMode: CameraCaptureMode) {
@@ -27,9 +66,10 @@ extension AppStore {
         postDraft.isUsingSampleCapture = false
     }
 
-    func clearDraftCapture() {
+    func clearDraftCapture(preservingDetails: Bool = false) {
         postDraft.capturedPhotoData = nil
         postDraft.isUsingSampleCapture = false
+        guard !preservingDetails else { return }
         postDraft.caption = ""
         postDraft.taggedFriendIDs = []
         postDraft.selectedDrinkIDs = []
@@ -46,24 +86,21 @@ extension AppStore {
         postDraft.isUsingSampleCapture = true
     }
 
-    /// Toggles a drink in/out of the multi-select set. Newly selected drinks are
-    /// inserted at the front so the latest tap becomes the primary drink shown
-    /// on the post, while older selections remain available for nightly tally UI.
+    /// Toggles the single selected drink for the draft.
+    /// Tapping a new drink replaces the previous choice; tapping the currently
+    /// selected drink clears the choice.
     func toggleDrink(_ drink: DrinkTag) {
-        if let idx = postDraft.selectedDrinkIDs.firstIndex(of: drink.id) {
-            postDraft.selectedDrinkIDs.remove(at: idx)
+        if postDraft.selectedDrinkIDs.first == drink.id {
+            postDraft.selectedDrinkIDs = []
         } else {
-            postDraft.selectedDrinkIDs.insert(drink.id, at: 0)
+            postDraft.selectedDrinkIDs = [drink.id]
         }
     }
 
-    /// Convenience for callers that still want a single forced-select (e.g. Vision suggestion).
-    /// Adds the drink without removing others; if already present, moves it to front as primary.
+    /// Convenience for callers that need a forced single-select
+    /// (e.g. Vision suggestion or quick-add).
     func selectDrink(_ drink: DrinkTag) {
-        if let idx = postDraft.selectedDrinkIDs.firstIndex(of: drink.id) {
-            postDraft.selectedDrinkIDs.remove(at: idx)
-        }
-        postDraft.selectedDrinkIDs.insert(drink.id, at: 0)
+        postDraft.selectedDrinkIDs = [drink.id]
     }
 
     func deselectDrink(_ drink: DrinkTag) {
@@ -86,81 +123,71 @@ extension AppStore {
         }
     }
 
-    func publishDraft() {
-        // Drink is optional for posting — fall back to first catalog drink if
-        // the viewer hasn't selected one. Only the photo/sample is required.
-        let drink = selectedDrinkForDraft ?? drinks.first
-        guard let viewer, let drink, canPublishDraft else { return }
+    func publishDraft() async {
+        guard let viewer, canPublishDraft else { return }
+        isPublishingDraft = true
+        postPublishError = nil
+        defer { isPublishingDraft = false }
 
         let venue = selectedVenueForDraft
-        let request = makeDraftCreateRequest(viewer: viewer, drink: drink, venue: venue)
+        let request = makeDraftCreateRequest(viewer: viewer, drink: selectedDrinkForDraft, venue: venue)
         let optimisticPost = makeOptimisticDraftPost(from: request)
-        let hadPostEarlierToday = viewerPosts.contains { post in
-            Calendar.current.isDate(post.createdAt, inSameDayAs: optimisticPost.createdAt)
-        }
-        let postCountToday = viewerPosts.filter {
-            Calendar.current.isDate($0.createdAt, inSameDayAs: optimisticPost.createdAt)
+        let postCountInCycle = viewerPosts.filter {
+            isInSameLiveActivityCycle($0.createdAt, as: optimisticPost.createdAt)
         }.count + 1
 
+        if request.shareLocally { localFeedIDs.insert(optimisticPost.id, at: 0) }
         posts.insert(optimisticPost, at: 0)
-        handleLiveActivityAfterPublishing(
-            optimisticPost,
-            isFirstPostToday: !hadPostEarlierToday,
-            postCountToday: postCountToday
-        )
-
-        Task {
-            if var publishedPost = try? await backend.publishMoment(request),
-               let index = posts.firstIndex(where: { $0.id == optimisticPost.id }) {
-                // Carry the local photoData forward into the published post so
-                // the feed card never flickers through a placeholder while
-                // AsyncImage fetches the remote URL. The server response sets
-                // photoData: nil (it only knows the remote path), which caused
-                // the card to collapse to the gradient placeholder during load.
-                if publishedPost.media.photoData == nil {
-                    publishedPost.media.photoData = optimisticPost.media.photoData
-                }
-                if publishedPost.media.photoAspectRatio == nil {
-                    publishedPost.media.photoAspectRatio = optimisticPost.media.photoAspectRatio
-                }
-                posts[index] = publishedPost
+        pendingPostCreates[optimisticPost.id] = optimisticPost
+        do {
+            var publishedPost = try await backend.publishMoment(request)
+            guard self.viewer?.id == viewer.id else { return }
+            // Carry the local photoData forward into the published post so
+            // the feed card never flickers through a placeholder while
+            // AsyncImage fetches the remote URL. The server response sets
+            // photoData: nil (it only knows the remote path), which caused
+            // the card to collapse to the gradient placeholder during load.
+            if publishedPost.media.photoData == nil {
+                publishedPost.media.photoData = optimisticPost.media.photoData
             }
+            if publishedPost.media.photoAspectRatio == nil {
+                publishedPost.media.photoAspectRatio = optimisticPost.media.photoAspectRatio
+            }
+            if let index = posts.firstIndex(where: { $0.id == optimisticPost.id }) {
+                posts[index] = publishedPost
+            } else if !posts.contains(where: { $0.id == publishedPost.id }) {
+                posts.insert(publishedPost, at: 0)
+            }
+            if let index = localFeedIDs.firstIndex(of: optimisticPost.id) { localFeedIDs[index] = publishedPost.id }
+            pendingPostCreates[optimisticPost.id] = nil
 
-            // Capture the confirmed or optimistic post before refreshAppData
-            // overwrites the posts array. The server may not have indexed the
-            // new post yet (replication lag, CDN caching), so we re-insert it
-            // if it doesn't appear in the bootstrap response.
+            // Capture the confirmed or optimistic post before any state
+            // mutation. The server may not have indexed the new post yet
+            // (replication lag, CDN caching), so we preserve it locally.
             let postedPostID = posts.first(where: {
                 $0.id == optimisticPost.id || $0.author.id == optimisticPost.author.id
                     && $0.createdAt >= optimisticPost.createdAt
             })?.id ?? optimisticPost.id
             let postToPreserve = posts.first(where: { $0.id == postedPostID })
-            // Hold onto the local image so we can re-inject it after the
-            // bootstrap wipes photoData (server records never carry it).
+            // Hold onto the local image so we can re-inject it after any
+            // refresh that strips photoData (server records never carry it).
             let localPhotoData = optimisticPost.media.photoData
+            let localAspectRatio = optimisticPost.media.photoAspectRatio
 
-            // Delay the post-publish bootstrap slightly so the DB has time
-            // to index the new row before we re-fetch. Without the delay, the
-            // bootstrap often returns before the insert is visible, causing us
-            // to re-insert the optimistic post unnecessarily and triggering a
-            // second UI update cycle.
-            try? await Task.sleep(for: .seconds(2))
-            await refreshAppData(silenceErrors: true)
-
-            // If the server response didn't include the new post yet, put it
-            // back at the top so the viewer sees their own post immediately.
-            if let post = postToPreserve,
-               !posts.contains(where: { $0.id == post.id }) {
-                posts.insert(post, at: 0)
+            // Add the new post to tonightActivityPosts immediately so the
+            // activity strip reflects the publish without a full bootstrap.
+            // Use the confirmed server post if available; fall back to the
+            // optimistic copy (which has all the same fields the strip needs).
+            let postForStrip = postToPreserve ?? optimisticPost
+            let tonightWindow = AppStore.tonightWindow(reference: .now)
+            if tonightWindow.contains(postForStrip.createdAt),
+               !tonightActivityPosts.contains(where: { $0.id == postForStrip.id }) {
+                tonightActivityPosts = sortPostsByRecency([postForStrip] + tonightActivityPosts)
             }
 
-            // Re-inject the local photoData after bootstrap. applyBootstrap
-            // replaces the entire posts array with server records that always
-            // have photoData: nil — causing the card to collapse to the
-            // gradient placeholder while AsyncImage fetches the remote URL.
-            // Keeping photoData alive in-memory means the card renders
-            // instantly from local data for the rest of the session.
-            let localAspectRatio = optimisticPost.media.photoAspectRatio
+            // Re-inject the local photoData so the feed card renders from
+            // local memory rather than collapsing to a gradient placeholder
+            // while AsyncImage fetches the remote URL.
             if let localPhotoData,
                let index = posts.firstIndex(where: { $0.id == postedPostID }) {
                 posts[index].media.photoData = localPhotoData
@@ -178,15 +205,39 @@ extension AppStore {
                         image.size.width / image.size.height
                 }
             }
+
+            // Skip the full bootstrap on publish. The optimistic post is
+            // already in the feed and the activity strip. The next 60-second
+            // poll tick will pick up any engagement that accumulates before
+            // then. A full bootstrap here doubled egress on every post for
+            // no visible benefit to the publisher.
+            // Exception: if the server post ID differs from the optimistic ID
+            // (shouldn't happen, but defensive), re-insert the server copy.
+            if let post = postToPreserve,
+               !posts.contains(where: { $0.id == post.id }) {
+                posts.insert(post, at: 0)
+            }
+            handleLiveActivityAfterPublishing(publishedPost, postCountInCycle: postCountInCycle)
+        } catch {
+            guard self.viewer?.id == viewer.id else { return }
+            pendingPostCreates[optimisticPost.id] = nil
+            removePostEverywhere(optimisticPost.id)
+            postPublishError = "Your photo and details are still here. Check your connection and tap Post to retry."
+            pendingMaddoxPlayer = false
+            return
         }
 
-        selectedTab = .home
-        feedScope = .friends
-        ensureSelectedPresenceCluster()
+        didPublishDuringPostFlow = true
         // If the Maddox easter egg is taking over the dismiss transition,
         // leave isPostFlowPresented alone — MaddoxPlayerView handles it.
+        // Otherwise, dismissing the cover triggers finishPostFlowDismissal,
+        // which routes to Home because didPublishDuringPostFlow is true.
         if !isMaddoxPlayerPresented {
             isPostFlowPresented = false
+        } else {
+            selectedTab = .home
+            feedScope = .friends
+            ensureSelectedPresenceCluster()
         }
         resetDraft()
     }
@@ -201,49 +252,35 @@ extension AppStore {
         }
     }
 
-    func enableLiveActivities() {
-        setLiveActivitiesEnabled(true)
-    }
-
     func setLiveActivitiesEnabled(_ isEnabled: Bool) {
-        liveActivityPreferences.isEnabled = isEnabled
-        isLiveActivityPromptPresented = false
-
+        liveActivityPreferences.setEnabled(isEnabled)
         if isEnabled {
-            let payload = liveActivityTogglePayload()
-            pendingLiveActivityPromptPost = nil
-            startLiveActivity(with: payload)
+            if let payload = liveActivityTogglePayload() {
+                startLiveActivity(with: payload, showsFailureMessage: true)
+            }
         } else {
-            pendingLiveActivityPromptPost = nil
-
             Task {
+                guard !liveActivityPreferences.isEnabled else { return }
                 await QuickPostLiveActivityManager.endAll()
             }
         }
     }
 
-    func declineLiveActivitiesPrompt() {
-        isLiveActivityPromptPresented = false
-        pendingLiveActivityPromptPost = nil
-    }
-
-    private func handleLiveActivityAfterPublishing(
-        _ post: MomentPost,
-        isFirstPostToday: Bool,
-        postCountToday: Int
-    ) {
-        if liveActivityPreferences.isEnabled {
-            startLiveActivity(with: liveActivityPayload(for: post, postCountToday: postCountToday))
-            return
-        }
+    private func handleLiveActivityAfterPublishing(_ post: MomentPost, postCountInCycle: Int) {
+        guard liveActivityPreferences.isEnabled else { return }
+        // Default-on needs no extra app prompt. An iOS-level opt-out should
+        // also stay quiet instead of showing an error after every post.
+        startLiveActivity(with: liveActivityPayload(for: post, postCountToday: postCountInCycle))
     }
 
     func refreshCurrentLiveActivity() {
         guard liveActivityPreferences.isEnabled else { return }
-        guard let latestPost = viewerPosts.first else { return }
+        guard let latestPost = viewerPosts.first(where: {
+            isInSameLiveActivityCycle($0.createdAt, as: .now)
+        }) else { return }
 
         let postCountToday = viewerPosts.filter {
-            Calendar.current.isDate($0.createdAt, inSameDayAs: latestPost.createdAt)
+            isInSameLiveActivityCycle($0.createdAt, as: latestPost.createdAt)
         }.count
 
         startLiveActivity(with: liveActivityPayload(for: latestPost, postCountToday: max(postCountToday, 1)))
@@ -253,110 +290,140 @@ extension AppStore {
         for post: MomentPost,
         postCountToday: Int
     ) -> QuickPostLiveActivityPayload {
-        let headline = postCountToday == 1 ? "1 post tonight" : "\(postCountToday) posts tonight"
-        let detail = "Tap here to add a post!"
-        let liveAvatar = viewer?.avatar ?? post.author.avatar
-
         return QuickPostLiveActivityPayload(
-            headline: headline,
-            detail: detail,
-            primaryHex: post.drink.primaryHex,
-            secondaryHex: post.drink.secondaryHex,
-            avatarSymbol: liveAvatar.symbol,
-            avatarPrimaryHex: liveAvatar.primaryHex,
-            avatarSecondaryHex: liveAvatar.secondaryHex,
-            avatarImageData: liveAvatar.imageData,
-            avatarRemoteURL: liveAvatar.remoteURL?.absoluteString,
             postCountToday: postCountToday,
-            createdAt: post.createdAt
+            createdAt: post.createdAt,
+            cycleEnd: liveActivityCycleEnd(for: post.createdAt)
         )
     }
 
-    private func liveActivityTogglePayload() -> QuickPostLiveActivityPayload {
-        if let pendingLiveActivityPromptPost {
-            let postCountToday = posts.filter {
-                $0.author.id == pendingLiveActivityPromptPost.author.id
-                    && Calendar.current.isDate($0.createdAt, inSameDayAs: pendingLiveActivityPromptPost.createdAt)
-            }.count
-            return liveActivityPayload(for: pendingLiveActivityPromptPost, postCountToday: max(postCountToday, 1))
-        }
-
-        if let latestPost = viewerPosts.first {
+    private func liveActivityTogglePayload() -> QuickPostLiveActivityPayload? {
+        if let latestPost = viewerPosts.first(where: {
+            isInSameLiveActivityCycle($0.createdAt, as: .now)
+        }) {
             let postCountToday = viewerPosts.filter {
-                Calendar.current.isDate($0.createdAt, inSameDayAs: latestPost.createdAt)
+                isInSameLiveActivityCycle($0.createdAt, as: latestPost.createdAt)
             }.count
             return liveActivityPayload(for: latestPost, postCountToday: max(postCountToday, 1))
         }
 
-        let avatar = viewer?.avatar ?? UserProfile.placeholderCurrentUser.avatar
-        return QuickPostLiveActivityPayload(
-            headline: "Ready to post",
-            detail: "Tap here to add a post!",
-            primaryHex: avatar.primaryHex,
-            secondaryHex: avatar.secondaryHex,
-            avatarSymbol: avatar.symbol,
-            avatarPrimaryHex: avatar.primaryHex,
-            avatarSecondaryHex: avatar.secondaryHex,
-            avatarImageData: avatar.imageData,
-            avatarRemoteURL: avatar.remoteURL?.absoluteString,
-            postCountToday: 0,
-            createdAt: .now
-        )
+        return nil
     }
 
-    private func startLiveActivity(with payload: QuickPostLiveActivityPayload) {
+    private func startLiveActivity(with payload: QuickPostLiveActivityPayload, showsFailureMessage: Bool = false) {
+        let userID = viewer?.id
         Task {
+            guard viewer?.id == userID, liveActivityPreferences.isEnabled else { return }
             let didStart = await QuickPostLiveActivityManager.startOrUpdate(with: payload)
+            guard viewer?.id == userID, liveActivityPreferences.isEnabled else {
+                await QuickPostLiveActivityManager.endAll()
+                return
+            }
             if !didStart {
                 await MainActor.run {
-                    liveActivityPreferences.isEnabled = false
-                    socialErrorMessage = "Couldn't start a Live Activity on this device right now."
+                    if showsFailureMessage {
+                        socialErrorMessage = "Live Activities are enabled, but iOS couldn't start one on this device right now."
+                    }
                 }
             }
         }
     }
 
-    /// Removes one of the viewer's own posts. Optimistic: drop it from the
+    private func isInSameLiveActivityCycle(_ candidate: Date, as reference: Date) -> Bool {
+        let window = AppStore.tonightWindow(reference: reference)
+        return candidate >= window.lowerBound && candidate < window.upperBound
+    }
+
+    private func liveActivityCycleEnd(for date: Date) -> Date {
+        AppStore.tonightWindow(reference: date).upperBound
+    }
+
+    func canDeletePost(_ post: MomentPost) -> Bool {
+        guard let viewer else { return false }
+        return post.author.id == viewer.id || isViewerAdmin
+    }
+
+    func removePostsEverywhere(
+        _ postIDs: Set<UUID>,
+        rememberDeleted: Bool = false,
+        persist: Bool = true
+    ) {
+        guard !postIDs.isEmpty else { return }
+
+        localFeedIDs.removeAll { postIDs.contains($0) }
+        posts.removeAll { postIDs.contains($0.id) }
+        tonightActivityPosts.removeAll { postIDs.contains($0.id) }
+        nightSummaryPosts.removeAll { postIDs.contains($0.id) }
+        notifications.removeAll { notification in
+            notification.postID.map { postIDs.contains($0) } ?? false
+        }
+
+        if rememberDeleted {
+            locallyDeletedPostIDs.formUnion(postIDs)
+        }
+
+        removeDeliveredNotifications(forPostIDs: postIDs)
+
+        if let selectedID = selectedPresenceClusterID,
+           allPresenceClusters.first(where: { $0.id == selectedID }) == nil {
+            selectedPresenceClusterID = nil
+        }
+
+        refreshCatalogs()
+        if persist {
+            persistFeedCache()
+        }
+    }
+
+    func removePostEverywhere(
+        _ postID: UUID,
+        rememberDeleted: Bool = false,
+        persist: Bool = true
+    ) {
+        removePostsEverywhere([postID], rememberDeleted: rememberDeleted, persist: persist)
+    }
+
+    /// Removes one post the viewer is allowed to moderate. Optimistic: drop it from the
     /// local array immediately so the UI feels instant, then hit the
     /// backend. If the delete fails, we refetch rather than restoring the
     /// stale copy — the server's view of the post is authoritative, and
     /// partial failures (e.g. post was already deleted from another
     /// device) would be confusing to unwind by hand.
     func deletePost(_ post: MomentPost) {
-        // Ownership check. This is defensive — the UI layer already hides
-        // the delete affordance for other people's posts — but a double
-        // check here means a future code path can't accidentally call
-        // this with somebody else's post and get a silent RLS rejection.
-        guard let viewer, post.author.id == viewer.id else { return }
+        guard canDeletePost(post) else { return }
 
-        posts.removeAll { $0.id == post.id }
-
-        // Immediately prune any notifications tied to this post so the
-        // Activity tab doesn't show tappable rows for content that no longer
-        // exists. The next bootstrap will confirm the same state from the server.
-        notifications.removeAll { $0.postID == post.id }
-
-        // If the viewer was focused on this post's cluster, clear the
-        // selection so the feed doesn't leave them staring at an empty
-        // detail state.
-        if let selectedID = selectedPresenceClusterID,
-           allPresenceClusters.first(where: { $0.id == selectedID }) == nil {
-            selectedPresenceClusterID = nil
-        }
+        removePostEverywhere(post.id, rememberDeleted: true)
 
         let viewerProfile = viewerIdentity
         Task {
             do {
-                try await backend.deletePost(post, by: viewerProfile)
-                // Local state already reflects the delete. Schedule a
-                // background refresh after a short delay so friends' feeds
-                // and presence clusters update, but don't block the UI.
-                try? await Task.sleep(for: .seconds(2))
-                await refreshAppData(silenceErrors: true)
+                if isViewerAdmin {
+                    try await backend.deletePostAsAdmin(post.id)
+                } else {
+                    try await backend.deletePost(post, by: viewerProfile)
+                }
+                // Storage cleanup runs client-side because Supabase blocks
+                // direct DELETEs on storage.objects from SECURITY DEFINER RPCs.
+                // Best-effort: failures are swallowed inside deletePostMedia.
+                await backend.deletePostMedia(post)
+                // Local state already reflects the delete (posts array,
+                // notifications, and presence cluster were all updated
+                // optimistically above). No full bootstrap needed — the
+                // next 60-second poll tick will confirm server truth for
+                // friends' feeds. A full refresh here was costing a
+                // complete bootstrap egress on every delete.
+                removePostEverywhere(post.id, rememberDeleted: true)
+                pendingPostCreates[post.id] = nil
             } catch {
+                // Rollback the optimistic removal on failure.
+                locallyDeletedPostIDs.remove(post.id)
                 socialErrorMessage = "Couldn't delete that post."
-                // Re-fetch on failure so local state matches server truth.
-                await refreshAppData(silenceErrors: true)
+                // Re-insert the post so local state doesn't silently diverge.
+                if !posts.contains(where: { $0.id == post.id }) {
+                    posts = sortPostsByRecency([post] + posts)
+                }
+                refreshCatalogs()
+                persistFeedCache()
             }
         }
     }
@@ -364,11 +431,18 @@ extension AppStore {
     func addReaction(_ kind: ReactionKind, to post: MomentPost) {
         guard let index = posts.firstIndex(where: { $0.id == post.id }) else { return }
 
-        if posts[index].viewerReactionKinds.contains(kind) {
+        let isRemovingExistingReaction = posts[index].viewerReactionKinds.contains(kind)
+        if kind == .dislike && !viewerIdentity.isVerified && !isRemovingExistingReaction {
+            return
+        }
+
+        if isRemovingExistingReaction {
             applyLocalReactionRemoval(kind, at: index)
 
             let updatedPost = posts[index]
             let viewer = viewerIdentity
+            let reactionKey = PendingPostReactionKey(postID: updatedPost.id, kind: kind)
+            pendingReactionStates[reactionKey] = false
 
             // Optimistically remove the reaction notification from the local
             // store so the Activity tab updates immediately without a refresh.
@@ -383,25 +457,99 @@ extension AppStore {
             }
 
             Task {
-                // Remove the reaction row and delete the notification the
-                // backend pushed to the post author when the like was added.
-                try? await backend.removeReaction(kind, from: updatedPost, by: viewer)
-                try? await backend.deleteReactionNotification(kind, on: updatedPost, by: viewer)
+                do {
+                    // Remove the reaction row and delete the notification the
+                    // backend pushed to the post author when the like was added.
+                    try await backend.removeReaction(kind, from: updatedPost, by: viewer)
+                    try? await backend.deleteReactionNotification(kind, on: updatedPost, by: viewer)
+                    if pendingReactionStates[reactionKey] == false {
+                        pendingReactionStates[reactionKey] = nil
+                    }
+                } catch {
+                    guard pendingReactionStates[reactionKey] == false else { return }
+                    pendingReactionStates[reactionKey] = nil
+                    applyLocalReactionState(kind, inPostID: updatedPost.id, isPresent: true)
+                    socialErrorMessage = "Couldn't update that like."
+                }
             }
             return
+        }
+
+        let mutuallyExclusiveKind = mutuallyExclusiveReaction(for: kind)
+        let removedMutuallyExclusiveKind = mutuallyExclusiveKind.flatMap { oppositeKind -> ReactionKind? in
+            guard posts[index].viewerReactionKinds.contains(oppositeKind) else { return nil }
+            applyLocalReactionRemoval(oppositeKind, at: index)
+            return oppositeKind
         }
 
         applyLocalReactionAddition(kind, at: index)
 
         let updatedPost = posts[index]
         let viewer = viewerIdentity
-        Task {
-            // Fire-and-forget: the optimistic addition is already applied.
-            // Deliver the outbound notification banner, but skip the full
-            // bootstrap — reactions are cheap local state.
-            if let delivery = try? await backend.recordReaction(kind, to: updatedPost, by: viewer) {
-                outboundNotificationDeliveries.insert(delivery, at: 0)
+        let reactionKey = PendingPostReactionKey(postID: updatedPost.id, kind: kind)
+        pendingReactionStates[reactionKey] = true
+
+        let removedReactionKey = removedMutuallyExclusiveKind.map {
+            PendingPostReactionKey(postID: updatedPost.id, kind: $0)
+        }
+        if let removedReactionKey {
+            pendingReactionStates[removedReactionKey] = false
+        }
+
+        if removedMutuallyExclusiveKind != nil,
+           updatedPost.author.id != viewer.id {
+            notifications.removeAll {
+                $0.kind == .reaction
+                    && $0.actor?.id == viewer.id
+                    && $0.postID == updatedPost.id
             }
+        }
+
+        Task {
+            do {
+                if let removedMutuallyExclusiveKind {
+                    try await backend.removeReaction(removedMutuallyExclusiveKind, from: updatedPost, by: viewer)
+                    try? await backend.deleteReactionNotification(removedMutuallyExclusiveKind, on: updatedPost, by: viewer)
+                    if let removedReactionKey, pendingReactionStates[removedReactionKey] == false {
+                        pendingReactionStates[removedReactionKey] = nil
+                    }
+                }
+
+                if let delivery = try await backend.recordReaction(kind, to: updatedPost, by: viewer) {
+                    outboundNotificationDeliveries.insert(delivery, at: 0)
+                }
+                if pendingReactionStates[reactionKey] == true {
+                    pendingReactionStates[reactionKey] = nil
+                }
+            } catch {
+                var shouldShowError = false
+                if pendingReactionStates[reactionKey] == true {
+                    pendingReactionStates[reactionKey] = nil
+                    applyLocalReactionState(kind, inPostID: updatedPost.id, isPresent: false)
+                    shouldShowError = true
+                }
+                if let removedMutuallyExclusiveKind,
+                   let removedReactionKey,
+                   pendingReactionStates[removedReactionKey] == false {
+                    pendingReactionStates[removedReactionKey] = nil
+                    applyLocalReactionState(removedMutuallyExclusiveKind, inPostID: updatedPost.id, isPresent: true)
+                    shouldShowError = true
+                }
+                if shouldShowError {
+                    socialErrorMessage = "Couldn't update that like."
+                }
+            }
+        }
+    }
+
+    private func mutuallyExclusiveReaction(for kind: ReactionKind) -> ReactionKind? {
+        switch kind {
+        case .cheers:
+            return .dislike
+        case .dislike:
+            return .cheers
+        case .spark, .fire:
+            return nil
         }
     }
 
@@ -423,34 +571,62 @@ extension AppStore {
 
         guard let newComment else { return }
 
-        posts[index].comments.insert(newComment, at: 0)
+        posts[index].comments.append(newComment)
         posts[index].commentCount += 1
 
         let post = posts[index]
         let viewer = viewerIdentity
+        let commentKey = PendingCommentKey(postID: postID, commentID: newComment.id)
+        pendingCommentCreates[commentKey] = newComment
         Task {
-            // Fire-and-forget: comment is already inserted optimistically.
-            // Deliver the outbound notification banner, but skip the full
-            // bootstrap — comment state is local until the next polling cycle.
-            if let delivery = try? await backend.recordComment(newComment, on: post, by: viewer) {
-                outboundNotificationDeliveries.insert(delivery, at: 0)
+            do {
+                if let delivery = try await backend.recordComment(newComment, on: post, by: viewer) {
+                    outboundNotificationDeliveries.insert(delivery, at: 0)
+                }
+                if pendingCommentCreates[commentKey]?.id == newComment.id {
+                    pendingCommentCreates[commentKey] = nil
+                }
+            } catch {
+                guard pendingCommentCreates[commentKey]?.id == newComment.id else { return }
+                pendingCommentCreates[commentKey] = nil
+                removeLocalPendingComment(commentID: newComment.id, inPostID: postID)
+                socialErrorMessage = "Couldn't post that comment."
             }
         }
     }
 
     func toggleCommentLike(commentID: UUID, inPostID postID: UUID) {
-        guard let postIndex = posts.firstIndex(where: { $0.id == postID }),
+        guard let viewer,
+              let postIndex = posts.firstIndex(where: { $0.id == postID }),
               let commentIndex = posts[postIndex].comments.firstIndex(where: { $0.id == commentID })
         else { return }
 
-        posts[postIndex].comments[commentIndex].isLikedByViewer.toggle()
-        if posts[postIndex].comments[commentIndex].isLikedByViewer {
-            posts[postIndex].comments[commentIndex].likeCount += 1
-        } else {
-            posts[postIndex].comments[commentIndex].likeCount = max(
-                posts[postIndex].comments[commentIndex].likeCount - 1,
-                0
-            )
+        let post = posts[postIndex]
+        let comment = posts[postIndex].comments[commentIndex]
+        let wasLiked = comment.isLikedByViewer
+        let desiredLikeState = !wasLiked
+        let likeKey = PendingCommentLikeKey(postID: postID, commentID: commentID)
+
+        applyLocalCommentLikeState(commentID: commentID, inPostID: postID, isLiked: desiredLikeState)
+        pendingCommentLikeStates[likeKey] = desiredLikeState
+
+        Task {
+            do {
+                if wasLiked {
+                    try await backend.removeCommentLike(comment, on: post, by: viewer)
+                    try? await backend.deleteCommentLikeNotification(comment, by: viewer)
+                } else if let delivery = try await backend.recordCommentLike(comment, on: post, by: viewer) {
+                    outboundNotificationDeliveries.insert(delivery, at: 0)
+                }
+                if pendingCommentLikeStates[likeKey] == desiredLikeState {
+                    pendingCommentLikeStates[likeKey] = nil
+                }
+            } catch {
+                guard pendingCommentLikeStates[likeKey] == desiredLikeState else { return }
+                pendingCommentLikeStates[likeKey] = nil
+                applyLocalCommentLikeState(commentID: commentID, inPostID: postID, isLiked: wasLiked)
+                socialErrorMessage = "Couldn't update that comment like."
+            }
         }
     }
 
@@ -459,7 +635,7 @@ extension AppStore {
               let post = posts.first(where: { $0.id == postID })
         else { return false }
 
-        return comment.author.id == viewer.id || post.author.id == viewer.id
+        return isViewerAdmin || comment.author.id == viewer.id || post.author.id == viewer.id
     }
 
     func deleteComment(commentID: UUID, inPostID postID: UUID) {
@@ -477,9 +653,13 @@ extension AppStore {
 
         Task {
             do {
-                try await backend.deleteComment(comment, on: post, by: viewer)
-                // Comment is already removed from local state. No bootstrap
-                // needed — the next polling cycle will confirm server truth.
+                if isViewerAdmin {
+                    try await backend.deleteCommentAsAdmin(comment.id)
+                } else {
+                    try await backend.deleteComment(comment, on: post, by: viewer)
+                }
+                await backend.deleteCommentMedia(comment)
+                _ = await refreshPost(id: postID)
             } catch {
                 socialErrorMessage = "Couldn't delete that comment."
                 // Re-insert the comment optimistically on failure so local
@@ -492,13 +672,39 @@ extension AppStore {
         }
     }
 
-    func ensureFullCommentsLoaded(for postID: UUID) async {
+    @discardableResult
+    func ensureFullCommentsLoaded(
+        for postID: UUID,
+        requiring requiredCommentID: UUID? = nil,
+        fallbackPost: MomentPost? = nil
+    ) async -> Bool {
+        if let fallbackPost, fallbackPost.id == postID {
+            if let existing = posts.first(where: { $0.id == postID }) {
+                let fallbackHasNewerPreview = fallbackPost.comments.count > existing.comments.count
+                let fallbackHasNewerCount = fallbackPost.commentCount > existing.commentCount
+                if fallbackHasNewerPreview || fallbackHasNewerCount {
+                    cacheProfilePosts([fallbackPost])
+                }
+            } else {
+                cacheProfilePosts([fallbackPost])
+            }
+        }
+
         guard let viewer,
               let postIndex = posts.firstIndex(where: { $0.id == postID })
-        else { return }
+        else { return false }
 
         let post = posts[postIndex]
-        guard !post.hasLoadedFullCommentThread || post.comments.count < post.commentCount else { return }
+        let isMissingRequiredComment = requiredCommentID.map { requiredCommentID in
+            !post.comments.contains(where: { $0.id == requiredCommentID })
+        } ?? false
+
+        guard isMissingRequiredComment
+                || !post.hasLoadedFullCommentThread
+                || post.comments.count < post.commentCount
+        else {
+            return true
+        }
 
         do {
             let serverComments = visibleComments(
@@ -506,15 +712,95 @@ extension AppStore {
             )
             let serverIDs = Set(serverComments.map(\.id))
             let optimisticTail = post.comments.filter { !serverIDs.contains($0.id) }
-            let merged = visibleComments(serverComments + optimisticTail)
+            let merged = applyingPendingCommentChanges(
+                to: visibleComments(serverComments + optimisticTail),
+                postID: postID
+            )
 
-            guard let refreshedIndex = posts.firstIndex(where: { $0.id == postID }) else { return }
+            guard let refreshedIndex = posts.firstIndex(where: { $0.id == postID }) else { return false }
             posts[refreshedIndex].comments = merged
             posts[refreshedIndex].commentCount = merged.count
             posts[refreshedIndex].hasLoadedFullCommentThread = true
+            guard let requiredCommentID else { return true }
+            return merged.contains(where: { $0.id == requiredCommentID })
         } catch {
             // Leave the preview comments in place on failure.
+            return false
         }
+    }
+
+    func ensurePostLoaded(id postID: UUID) async -> Bool {
+        if posts.contains(where: { $0.id == postID }) { return true }
+        guard let viewer else { return false }
+
+        do {
+            guard let loadedPost = try await backend.loadPost(id: postID, viewer: viewer),
+                  let visible = visiblePost(loadedPost)
+            else {
+                removePostEverywhere(postID)
+                return false
+            }
+
+            let mergedVisible = applyingPendingEngagement(to: visible)
+            if let existingIndex = posts.firstIndex(where: { $0.id == mergedVisible.id }) {
+                posts[existingIndex] = mergedVisible
+            } else {
+                posts.append(mergedVisible)
+            }
+            posts = sortPostsByRecency(posts)
+            refreshCatalogs()
+            persistFeedCache()
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Fetches fresh data for a post that is already in the local cache and
+    /// updates it in place. Unlike `ensurePostLoaded`, this always hits the
+    /// network so engagement counts (likes, comments, reactions) reflect the
+    /// latest server state. Used when opening a post from a push notification
+    /// to ensure the triggering event (like, comment, etc.) is visible.
+    @discardableResult
+    func refreshPost(id postID: UUID) async -> Bool {
+        guard let viewer else { return false }
+        do {
+            guard let loadedPost = try await backend.loadPost(id: postID, viewer: viewer),
+                  let visible = visiblePost(loadedPost)
+            else {
+                removePostEverywhere(postID)
+                return false
+            }
+
+            let mergedVisible = applyingPendingEngagement(to: visible)
+            if let existingIndex = posts.firstIndex(where: { $0.id == mergedVisible.id }) {
+                posts[existingIndex] = mergedVisible
+            } else {
+                posts.append(mergedVisible)
+            }
+            posts = sortPostsByRecency(posts)
+            refreshCatalogs()
+            persistFeedCache()
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Push notifications can arrive while the app has an older copy of the
+    /// post in memory. Refresh the targeted post immediately so the opened
+    /// detail reflects the like/comment/tag that caused the notification.
+    @discardableResult
+    func refreshPostFromNotification(postID: UUID, commentID: UUID?) async -> Bool {
+        let refreshedPost = await refreshPost(id: postID)
+        if let commentID {
+            let loadedTargetComment = await ensureFullCommentsLoaded(
+                for: postID,
+                requiring: commentID
+            )
+            return refreshedPost && loadedTargetComment
+        }
+        return refreshedPost
     }
 
     func ensureReactorsLoaded(for kind: ReactionKind, inPostID postID: UUID) async {
@@ -537,12 +823,10 @@ extension AppStore {
 
             guard let refreshedIndex = posts.firstIndex(where: { $0.id == postID }) else { return }
             if let summaryIndex = posts[refreshedIndex].reactions.firstIndex(where: { $0.kind == kind }) {
+                let preservedCount = max(posts[refreshedIndex].reactions[summaryIndex].count, reactors.count)
                 posts[refreshedIndex].reactions[summaryIndex].reactors = reactors
-                posts[refreshedIndex].reactions[summaryIndex].count = reactors.count
-                if posts[refreshedIndex].reactions[summaryIndex].reactors.count
-                    >= posts[refreshedIndex].reactions[summaryIndex].count {
-                    posts[refreshedIndex].fullyLoadedReactionKinds.insert(kind)
-                }
+                posts[refreshedIndex].reactions[summaryIndex].count = preservedCount
+                posts[refreshedIndex].fullyLoadedReactionKinds.insert(kind)
             } else if !reactors.isEmpty {
                 posts[refreshedIndex].reactions.append(
                     ReactionSummary(kind: kind, count: reactors.count, reactors: reactors)
@@ -570,7 +854,7 @@ extension AppStore {
     }
 }
 
-private extension AppStore {
+extension AppStore {
     func sortCommentsByCreatedAt(_ comments: [Comment]) -> [Comment] {
         comments.sorted { lhs, rhs in
             if lhs.createdAt == rhs.createdAt {
@@ -580,22 +864,34 @@ private extension AppStore {
         }
     }
 
-    func makeDraftCreateRequest(viewer: UserProfile, drink: DrinkTag, venue: Venue?) -> MomentCreateRequest {
-        let trimmedCaption = postDraft.caption.trimmingCharacters(in: .whitespacesAndNewlines)
+    func makeDraftCreateRequest(viewer: UserProfile, drink: DrinkTag?, venue: Venue?) -> MomentCreateRequest {
+        let trimmedCaption = PostDraft.limitedCaption(
+            postDraft.caption.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+
+        var sharedLocation = postDraft.location
+        if postDraft.shareLocally, var location = sharedLocation {
+            location.latitude = (location.latitude * 100).rounded() / 100
+            location.longitude = (location.longitude * 100).rounded() / 100
+            location.horizontalAccuracy = max(location.horizontalAccuracy, 1100)
+            sharedLocation = location
+        }
 
         return MomentCreateRequest(
+            id: postDraft.id,
+            shareLocally: postDraft.shareLocally,
             author: viewer,
             drink: drink,
-            venue: venue,
-            location: postDraft.location,
+            venue: postDraft.shareLocally ? nil : venue,
+            location: sharedLocation,
             caption: trimmedCaption,
             taggedFriends: taggedFriendsForDraft,
             isSharedMoment: postDraft.isSharedMoment,
             media: {
                 var m = MomentMedia(
                     photoData: postDraft.capturedPhotoData,
-                    primaryHex: drink.primaryHex,
-                    secondaryHex: drink.secondaryHex,
+                    primaryHex: drink?.primaryHex ?? "#2A1815",
+                    secondaryHex: drink?.secondaryHex ?? "#B86831",
                     symbol: postDraft.sampleSymbol
                 )
                 // Derive the aspect ratio through the same EXIF-aware path the
@@ -621,7 +917,7 @@ private extension AppStore {
             : "With \(taggedFriends.first?.displayName ?? "friends")\(taggedFriends.count > 1 ? " +\(taggedFriends.count - 1)" : "")"
 
         return MomentPost(
-            id: UUID(),
+            id: request.id,
             author: request.author,
             drink: request.drink,
             venue: request.venue,
@@ -637,7 +933,8 @@ private extension AppStore {
             hasLoadedFullCommentThread: true,
             presenceNote: taggedFriends.isEmpty ? nil : "\(taggedFriends.first?.displayName ?? "Friends") is in the post",
             connectionPath: nil,
-            contextReason: companionSummary ?? (request.venue == nil ? "Live right now" : "Just checked in")
+            contextReason: companionSummary ?? (request.venue == nil ? "Live right now" : "Just checked in"),
+            isSharedLocally: request.shareLocally
         )
     }
 
@@ -710,6 +1007,113 @@ private extension AppStore {
 
         if posts[index].reactions[reactionIndex].count == 0 {
             posts[index].reactions.remove(at: reactionIndex)
+        }
+    }
+
+    func applyLocalReactionState(_ kind: ReactionKind, inPostID postID: UUID, isPresent: Bool) {
+        guard let index = posts.firstIndex(where: { $0.id == postID }) else { return }
+        let currentlyPresent = posts[index].viewerReactionKinds.contains(kind)
+        guard currentlyPresent != isPresent else { return }
+
+        if isPresent {
+            applyLocalReactionAddition(kind, at: index)
+        } else {
+            applyLocalReactionRemoval(kind, at: index)
+        }
+
+        refreshCatalogs()
+        persistFeedCache()
+    }
+
+    func applyLocalCommentLikeState(commentID: UUID, inPostID postID: UUID, isLiked: Bool) {
+        guard let postIndex = posts.firstIndex(where: { $0.id == postID }),
+              let commentIndex = posts[postIndex].comments.firstIndex(where: { $0.id == commentID })
+        else { return }
+
+        applyCommentLikeState(isLiked, to: &posts[postIndex].comments[commentIndex])
+        refreshCatalogs()
+        persistFeedCache()
+    }
+
+    func removeLocalPendingComment(commentID: UUID, inPostID postID: UUID) {
+        guard let postIndex = posts.firstIndex(where: { $0.id == postID }),
+              let commentIndex = posts[postIndex].comments.firstIndex(where: { $0.id == commentID })
+        else { return }
+
+        posts[postIndex].comments.remove(at: commentIndex)
+        posts[postIndex].commentCount = max(posts[postIndex].commentCount - 1, 0)
+        refreshCatalogs()
+        persistFeedCache()
+    }
+
+    func applyingPendingEngagement(to post: MomentPost) -> MomentPost {
+        var updated = post
+
+        for (key, isPresent) in pendingReactionStates where key.postID == updated.id {
+            applyReactionState(isPresent, kind: key.kind, to: &updated)
+        }
+
+        updated.comments = applyingPendingCommentChanges(to: updated.comments, postID: updated.id)
+        updated.commentCount = max(updated.commentCount, updated.comments.count)
+        return updated
+    }
+
+    func applyingPendingCommentChanges(to comments: [Comment], postID: UUID) -> [Comment] {
+        var merged = comments
+        var mergedIDs = Set(merged.map(\.id))
+
+        let pendingComments = pendingCommentCreates
+            .filter { $0.key.postID == postID }
+            .map(\.value)
+            .sorted { $0.createdAt < $1.createdAt }
+
+        for comment in pendingComments where mergedIDs.insert(comment.id).inserted {
+            merged.append(comment)
+        }
+
+        for index in merged.indices {
+            let key = PendingCommentLikeKey(postID: postID, commentID: merged[index].id)
+            if let isLiked = pendingCommentLikeStates[key] {
+                applyCommentLikeState(isLiked, to: &merged[index])
+            }
+        }
+
+        return merged
+    }
+
+    private func applyReactionState(_ isPresent: Bool, kind: ReactionKind, to post: inout MomentPost) {
+        let currentlyPresent = post.viewerReactionKinds.contains(kind)
+        guard currentlyPresent != isPresent else { return }
+
+        if isPresent {
+            post.viewerReactionKinds.insert(kind)
+            let me = viewerIdentity
+            if let reactionIndex = post.reactions.firstIndex(where: { $0.kind == kind }) {
+                post.reactions[reactionIndex].count += 1
+                if !post.reactions[reactionIndex].reactors.contains(where: { $0.id == me.id }) {
+                    post.reactions[reactionIndex].reactors.insert(me, at: 0)
+                }
+            } else {
+                post.reactions.append(ReactionSummary(kind: kind, count: 1, reactors: [me]))
+            }
+        } else {
+            post.viewerReactionKinds.remove(kind)
+            guard let reactionIndex = post.reactions.firstIndex(where: { $0.kind == kind }) else { return }
+            post.reactions[reactionIndex].count = max(post.reactions[reactionIndex].count - 1, 0)
+            post.reactions[reactionIndex].reactors.removeAll { $0.id == viewerIdentity.id }
+            if post.reactions[reactionIndex].count == 0 {
+                post.reactions.remove(at: reactionIndex)
+            }
+        }
+    }
+
+    private func applyCommentLikeState(_ isLiked: Bool, to comment: inout Comment) {
+        guard comment.isLikedByViewer != isLiked else { return }
+        comment.isLikedByViewer = isLiked
+        if isLiked {
+            comment.likeCount += 1
+        } else {
+            comment.likeCount = max(comment.likeCount - 1, 0)
         }
     }
 }

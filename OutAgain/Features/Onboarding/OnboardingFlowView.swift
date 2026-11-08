@@ -2,19 +2,53 @@ import PhotosUI
 import SwiftUI
 import UIKit
 
+/// The open inner display has an asymmetric system-control safe area. Balance
+/// that inset so the welcome group is centered on the display while keeping it
+/// out of the controls. The outer display retains its native content region.
+private struct DuoWelcomeLayout: ViewModifier {
+    @Environment(AppStore.self) private var store
+
+    func body(content: Content) -> some View {
+        #if canImport(SwiftUICore, _version: 8.1)
+        if #available(iOS 27.1, *), store.isDuoDevice {
+            GeometryReader { geometry in
+                let divisions = geometry.reservedRegions(kind: .division, options: .includeInactive)
+                let isFullyOpen = !divisions.isEmpty && divisions.allSatisfy { !$0.isActive }
+                let insets = geometry.safeAreaInsets
+                ScrollView {
+                    content
+                        .padding(.leading, isFullyOpen ? max(0, insets.trailing - insets.leading) : 0)
+                        .padding(.trailing, isFullyOpen ? max(0, insets.leading - insets.trailing) : 0)
+                        .frame(maxWidth: .infinity, minHeight: geometry.size.height)
+                }
+                .scrollIndicators(.hidden)
+                .scrollBounceBehavior(.basedOnSize)
+                .scrollDismissesKeyboard(.interactively)
+            }
+        } else {
+            content
+        }
+        #else
+        content
+        #endif
+    }
+}
+
 struct OnboardingFlowView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.appAccent) private var accent
     @Environment(PermissionCenter.self) private var permissions
     @State private var selectedPhotoItem: PhotosPickerItem?
-    @State private var pendingCropImage: UIImage?
+    @State private var pendingCropImage: IdentifiableImage?
+    @FocusState private var focusedAuthField: WelcomeAuthField?
 
     var body: some View {
         @Bindable var store = store
 
         Group {
-            if store.onboardingStep == .welcome {
+            if shouldShowWelcome {
                 welcomeStep
+                    .modifier(DuoWelcomeLayout())
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 24) {
@@ -48,14 +82,12 @@ struct OnboardingFlowView: View {
             Task {
                 if let data = try? await newValue.loadTransferable(type: Data.self),
                    let image = UIImage(data: data) {
-                    pendingCropImage = image
+                    pendingCropImage = IdentifiableImage(image: image)
                 }
+                selectedPhotoItem = nil
             }
         }
-        .fullScreenCover(item: Binding(
-            get: { pendingCropImage.map { IdentifiableImage(image: $0) } },
-            set: { if $0 == nil { pendingCropImage = nil } }
-        )) { wrapper in
+        .fullScreenCover(item: $pendingCropImage) { wrapper in
             ImageCropSheet(image: wrapper.image) { croppedData in
                 store.onboardingDraft.profileImageData = croppedData
                 pendingCropImage = nil
@@ -67,6 +99,18 @@ struct OnboardingFlowView: View {
             guard store.onboardingStep == .profile else { return }
             await store.refreshUsernameAvailability()
         }
+        .task(id: shouldShowWelcome) {
+            guard shouldShowWelcome else { return }
+            // Signed-out bootstrap cannot return authenticated app data. Load
+            // the public rollout flag separately so passkeys work on first launch.
+            await store.refreshAppConfigOnly()
+        }
+    }
+
+    private var shouldShowWelcome: Bool {
+        if store.onboardingStep == .welcome { return true }
+        if store.onboardingStep == .done, case .signedOut = store.authState { return true }
+        return false
     }
 
     @ViewBuilder
@@ -82,14 +126,14 @@ struct OnboardingFlowView: View {
                         Image(systemName: "chevron.left")
                             .font(.system(size: 15, weight: .semibold))
                         Text("Back")
-                            .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                            .font(AppTypography.button)
                     }
                     .foregroundStyle(AppTheme.softText)
                 }
                 .buttonStyle(.plain)
 
                 Text(headerTitle)
-                    .font(.system(size: 44, weight: .bold, design: .serif))
+                    .font(AppTypography.pageTitle)
                     .foregroundStyle(.white)
             }
             .padding(.top, 12)
@@ -113,12 +157,17 @@ struct OnboardingFlowView: View {
 
             VStack(spacing: 14) {
                 Text("Welcome to Out Again")
-                    .font(.system(size: 44, weight: .bold, design: .serif))
+                    .font(AppTypography.brandHero)
                     .foregroundStyle(.white)
                     .multilineTextAlignment(.center)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.74)
+                    .allowsTightening(true)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .layoutPriority(1)
 
                 Text("Nightlife with your friends.")
-                    .font(.system(.title3, design: .rounded, weight: .medium))
+                    .font(AppTypography.heroSubtitle)
                     .foregroundStyle(AppTheme.softText)
                     .multilineTextAlignment(.center)
             }
@@ -126,39 +175,55 @@ struct OnboardingFlowView: View {
 
             NightPanel(cornerRadius: 34, padding: 22) {
                 VStack(alignment: .leading, spacing: 18) {
-                    SectionEyebrow(
-                        title: store.authDraft.mode.eyebrowTitle
-                    )
+                    if store.isSignInMode {
+                        SectionEyebrow(title: store.authDraft.mode.eyebrowTitle)
+                    }
 
                     VStack(alignment: .leading, spacing: 10) {
-                        fieldLabel("Email Address")
-                        TextField("", text: $store.authDraft.email)
-                            .keyboardType(.emailAddress)
-                            .textContentType(.emailAddress)
+                        fieldLabel(store.isSignInMode ? "Username or Email" : "Email Address")
+                        TextField("", text: $store.authDraft.identifier)
+                            .font(AppTypography.formInput)
+                            .keyboardType(store.isSignInMode ? .default : .emailAddress)
+                            .textContentType(store.isSignInMode ? .username : .emailAddress)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
-                            .accessibilityLabel("Email Address")
+                            .focused($focusedAuthField, equals: .email)
+                            .submitLabel(.next)
+                            .onSubmit { focusedAuthField = .password }
+                            .accessibilityLabel(store.isSignInMode ? "Username or Email" : "Email Address")
                             .padding(16)
                             .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                             .overlay(
                                 RoundedRectangle(cornerRadius: 18, style: .continuous)
                                     .strokeBorder(AppTheme.line, lineWidth: 1)
                             )
+                            .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                            .onTapGesture { focusedAuthField = .email }
 
                         fieldLabel("Password")
                         SecureField(
                             store.isSignInMode ? "Enter your password" : "At least 8 characters",
                             text: $store.authDraft.password
                         )
+                        .font(AppTypography.formInput)
                         .textContentType(store.isSignInMode ? .password : .newPassword)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .focused($focusedAuthField, equals: .password)
+                        .submitLabel(.go)
+                        .onSubmit {
+                            if store.canSubmitAuth {
+                                store.submitAuth()
+                            }
+                        }
                         .padding(16)
                         .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                         .overlay(
                             RoundedRectangle(cornerRadius: 18, style: .continuous)
                                 .strokeBorder(AppTheme.line, lineWidth: 1)
                         )
+                        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .onTapGesture { focusedAuthField = .password }
                     }
 
                     Button(store.authDraft.mode.primaryActionTitle) {
@@ -169,6 +234,19 @@ struct OnboardingFlowView: View {
                     .buttonStyle(.glassProminent)
                     .disabled(!store.canSubmitAuth)
                     .opacity(store.canSubmitAuth ? 1 : 0.65)
+
+                    if store.isSignInMode && store.arePasskeysEnabled {
+                        Button {
+                            focusedAuthField = nil
+                            store.submitPasskeySignIn()
+                        } label: {
+                            Label("Sign In with a Passkey", systemImage: "person.badge.key.fill")
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 48)
+                        }
+                        .buttonStyle(.glass)
+                        .disabled(store.authDraft.isSubmitting)
+                    }
 
                     if let socialErrorMessage = store.socialErrorMessage {
                         statusRow(
@@ -187,8 +265,9 @@ struct OnboardingFlowView: View {
                         }
                         .buttonStyle(.plain)
                         .foregroundStyle(.white)
+                        .disabled(store.authDraft.isSubmitting)
                     }
-                    .font(.system(.subheadline, design: .rounded, weight: .medium))
+                    .font(AppTypography.rowSubtitleMedium)
                 }
             }
             .frame(maxWidth: .infinity)
@@ -228,7 +307,7 @@ struct OnboardingFlowView: View {
                         .buttonStyle(.plain)
 
                         Text("Add a Profile Picture")
-                            .font(.system(.headline, design: .rounded, weight: .semibold))
+                            .font(AppTypography.rowTitle)
                             .foregroundStyle(.white)
 
                         Spacer()
@@ -237,6 +316,7 @@ struct OnboardingFlowView: View {
                     VStack(alignment: .leading, spacing: 14) {
                         fieldLabel("Display Name")
                         TextField("Your name", text: $store.onboardingDraft.displayName)
+                            .font(AppTypography.formInput)
                             .textInputAutocapitalization(.words)
                             .padding(16)
                             .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -247,6 +327,7 @@ struct OnboardingFlowView: View {
 
                         fieldLabel("Username")
                         TextField("username", text: $store.onboardingDraft.username)
+                            .font(AppTypography.formInput)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .padding(16)
@@ -276,18 +357,9 @@ struct OnboardingFlowView: View {
         VStack(alignment: .leading, spacing: 18) {
             NightPanel(cornerRadius: 34, padding: 22) {
                 VStack(alignment: .leading, spacing: 18) {
-                    Text("We ask for contacts, notifications, and location so you can find friends and know when they post, react, or comment.")
-                        .font(.system(size: 22, weight: .bold, design: .serif))
+                    Text("We ask for notifications and location so you know when friends react, comment, tag you, or add you to groups, and so posts can use nearby place context.")
+                        .font(AppTypography.callout)
                         .foregroundStyle(.white)
-                    PermissionPromptCard(
-                        title: "Contacts",
-                        symbol: "person.2.fill",
-                        state: permissions.contactsStatus
-                    ) {
-                        Task {
-                            await permissions.requestContacts()
-                        }
-                    }
                     PermissionPromptCard(
                         title: "Notifications",
                         symbol: "bell.badge.fill",
@@ -331,12 +403,13 @@ struct OnboardingFlowView: View {
             NightPanel(cornerRadius: 34, padding: 22) {
                 VStack(alignment: .leading, spacing: 18) {
                     Text("Search by username to find and add friends before you start.")
-                        .font(.system(size: 22, weight: .bold, design: .serif))
+                        .font(AppTypography.callout)
                         .foregroundStyle(.white)
 
                     VStack(alignment: .leading, spacing: 12) {
                         fieldLabel("Find Friends")
                         TextField("Search by username", text: $store.friendSearchQuery)
+                            .font(AppTypography.formInput)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .padding(16)
@@ -356,9 +429,9 @@ struct OnboardingFlowView: View {
                                         AvatarView(avatar: friend.avatar, size: 46)
                                         VStack(alignment: .leading, spacing: 2) {
                                             Text(friend.displayName)
-                                                .font(.system(.headline, design: .rounded, weight: .semibold))
+                                                .font(AppTypography.rowTitle)
                                             Text("@\(friend.username)")
-                                                .font(.system(.subheadline, design: .rounded))
+                                                .font(AppTypography.rowSubtitle)
                                                 .foregroundStyle(AppTheme.softText)
                                         }
                                         Spacer()
@@ -366,35 +439,13 @@ struct OnboardingFlowView: View {
                                             store.sendFriendRequest(to: friend)
                                         }
                                         .buttonStyle(.glass)
+                                        .tint(.white)
                                     }
                                 }
                             }
                         }
                     }
 
-                    // Only show contacts-based suggestions if the user granted access
-                    if permissions.contactsStatus == .granted && !store.suggestedFriends.isEmpty {
-                        VStack(alignment: .leading, spacing: 12) {
-                            fieldLabel("From Your Contacts")
-                            ForEach(store.suggestedFriends) { friend in
-                                HStack(spacing: 12) {
-                                    AvatarView(avatar: friend.avatar, size: 46)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(friend.displayName)
-                                            .font(.system(.headline, design: .rounded, weight: .semibold))
-                                        Text("@\(friend.username)")
-                                            .font(.system(.subheadline, design: .rounded))
-                                            .foregroundStyle(AppTheme.softText)
-                                    }
-                                    Spacer()
-                                    Button("Add") {
-                                        store.sendFriendRequest(to: friend)
-                                    }
-                                    .buttonStyle(.glass)
-                                }
-                            }
-                        }
-                    }
                 }
             }
 
@@ -445,16 +496,21 @@ struct OnboardingFlowView: View {
             Image(systemName: symbol)
                 .foregroundStyle(tint)
             Text(text)
-                .font(.system(.footnote, design: .rounded, weight: .medium))
+                .font(AppTypography.footnoteMedium)
                 .foregroundStyle(AppTheme.softText)
         }
     }
 
     private func fieldLabel(_ title: String) -> some View {
         Text(title)
-            .font(.system(size: 22, weight: .bold, design: .serif))
+            .font(AppTypography.fieldLabel)
             .foregroundStyle(.white)
     }
+}
+
+private enum WelcomeAuthField: Hashable {
+    case email
+    case password
 }
 
 private struct PermissionPromptCard: View {
@@ -467,19 +523,19 @@ private struct PermissionPromptCard: View {
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
             Image(systemName: symbol)
-                .font(.system(size: 18, weight: .bold))
+                .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(accent)
                 .frame(width: 34, height: 34)
                 .background(.white.opacity(0.06), in: Circle())
             VStack(alignment: .leading, spacing: 6) {
                 Text(title)
-                    .font(.system(.headline, design: .rounded, weight: .semibold))
+                    .font(AppTypography.rowTitle)
                     .foregroundStyle(.white)
             }
             Spacer()
             Button(action: action) {
                 Text(state.rawValue)
-                    .font(.system(.footnote, design: .rounded, weight: .semibold))
+                    .font(AppTypography.buttonFootnote)
             }
             .buttonStyle(.glass)
         }

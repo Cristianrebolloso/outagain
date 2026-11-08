@@ -1,9 +1,28 @@
 import Foundation
 
 extension AppStore {
+    func handleBackgroundThemeChanged(_ theme: BackgroundTheme) {
+        guard var updatedViewer = viewer else { return }
+
+        updatedViewer.backgroundTheme = theme
+        viewer = updatedViewer
+        posts = posts.map { replacingViewerProfile(in: $0, with: updatedViewer) }
+        tonightActivityPosts = tonightActivityPosts.map { replacingViewerProfile(in: $0, with: updatedViewer) }
+
+        Task {
+            do {
+                try await backend.updateBackgroundTheme(theme, for: updatedViewer)
+            } catch {
+                // Theme sharing is nice-to-have; keep the local choice even if
+                // a transient network error prevents the server sync.
+            }
+        }
+    }
+
     func beginProfileEditing() {
         profileEditor = ProfileEditorDraft(profile: viewerIdentity)
-        profileUsernameAvailability = .unchecked
+        let currentUsername = viewerIdentity.normalizedUsername
+        profileUsernameAvailability = currentUsername.isEmpty ? .unchecked : .available(currentUsername)
         profileEditorMessage = nil
     }
 
@@ -13,6 +32,11 @@ extension AppStore {
 
         guard !username.isEmpty else {
             profileUsernameAvailability = .unchecked
+            return
+        }
+
+        if username == viewerIdentity.normalizedUsername {
+            profileUsernameAvailability = .available(username)
             return
         }
 
@@ -50,14 +74,7 @@ extension AppStore {
                     // Pass the current avatar path so updateProfile can skip
                     // a redundant fetchCurrentProfile() call when the avatar
                     // isn't being changed. Saves one DB round-trip per save.
-                    currentAvatarPath: viewer?.avatar.remoteURL.flatMap { url in
-                        // Extract just the object path from the full storage URL.
-                        // The path is the suffix after /object/public/<bucket>/.
-                        let str = url.absoluteString
-                        guard let range = str.range(of: "/object/public/[^/]+/",
-                                                     options: .regularExpression) else { return nil }
-                        return String(str[range.upperBound...].prefix(while: { $0 != "?" }))
-                    }
+                    currentAvatarPath: currentAvatarPath(from: viewer?.avatar.remoteURL)
                 ),
                 for: viewerIdentity
             )
@@ -69,14 +86,65 @@ extension AppStore {
             applyProfileUpdate(updatedViewer)
             return true
         } catch {
-            profileEditorMessage = "Couldn't save your profile yet."
+            profileEditorMessage = profileSaveMessage(for: error)
             return false
         }
     }
+
+    func replacingViewerProfile(in post: MomentPost, with updatedViewer: UserProfile? = nil) -> MomentPost {
+        let viewerProfile = updatedViewer ?? viewerIdentity
+        var updatedPost = post
+
+        if updatedPost.author.id == viewerProfile.id {
+            updatedPost.author = viewerProfile
+        }
+
+        updatedPost.taggedFriends = updatedPost.taggedFriends.map { friend in
+            friend.id == viewerProfile.id ? viewerProfile : friend
+        }
+
+        updatedPost.reactions = updatedPost.reactions.map { reaction in
+            var updatedReaction = reaction
+            updatedReaction.reactors = updatedReaction.reactors.map { reactor in
+                reactor.id == viewerProfile.id ? viewerProfile : reactor
+            }
+            return updatedReaction
+        }
+
+        let viewerCommentIDs = Set(updatedPost.comments.filter { $0.author.id == viewerProfile.id }.map(\.id))
+        updatedPost.comments = updatedPost.comments.map { comment in
+            var updatedComment = comment
+            if updatedComment.author.id == viewerProfile.id {
+                updatedComment.author = viewerProfile
+            }
+            if let replyToCommentID = updatedComment.replyToCommentID,
+               viewerCommentIDs.contains(replyToCommentID) {
+                updatedComment.replyToDisplayName = viewerProfile.displayName
+            }
+            return updatedComment
+        }
+
+        return updatedPost
+    }
+
 }
 
 private extension AppStore {
+    func currentAvatarPath(from url: URL?) -> String? {
+        guard let url else { return nil }
+        let str = url.absoluteString
+        guard let range = str.range(
+            of: "/object/public/[^/]+/",
+            options: .regularExpression
+        ) else { return nil }
+        return String(str[range.upperBound...].prefix(while: { $0 != "?" }))
+    }
+
     func confirmAvailableProfileUsername() async -> String? {
+        if normalizedProfileEditorUsername == viewerIdentity.normalizedUsername {
+            return normalizedProfileEditorUsername
+        }
+
         if case .available(let username, _) = profileUsernameAvailability,
            username == normalizedProfileEditorUsername {
             return username
@@ -96,33 +164,30 @@ private extension AppStore {
 
     func applyProfileUpdate(_ updatedViewer: UserProfile) {
         viewer = updatedViewer
+        profileEditor = ProfileEditorDraft(profile: updatedViewer)
         onboardingDraft.displayName = updatedViewer.displayName
         onboardingDraft.username = updatedViewer.username
         onboardingDraft.profileImageData = updatedViewer.avatar.imageData
         onboardingDraft.inviteLink = backend.createInviteLink(for: updatedViewer.username).absoluteString
 
-        posts = posts.map { post in
-            var updatedPost = post
-
-            if updatedPost.author.id == updatedViewer.id {
-                updatedPost.author = updatedViewer
-            }
-
-            updatedPost.taggedFriends = updatedPost.taggedFriends.map { friend in
-                friend.id == updatedViewer.id ? updatedViewer : friend
-            }
-
-            updatedPost.comments = updatedPost.comments.map { comment in
-                var updatedComment = comment
-                if updatedComment.author.id == updatedViewer.id {
-                    updatedComment.author = updatedViewer
-                }
-                return updatedComment
-            }
-
-            return updatedPost
-        }
+        posts = posts.map { replacingViewerProfile(in: $0, with: updatedViewer) }
+        tonightActivityPosts = tonightActivityPosts.map { replacingViewerProfile(in: $0, with: updatedViewer) }
 
         refreshCurrentLiveActivity()
+    }
+
+    func profileSaveMessage(for error: Error) -> String {
+        if let backendError = error as? SupabaseBackendError {
+            switch backendError {
+            case .requestFailed(let message, _), .transport(let message):
+                if !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return message
+                }
+            default:
+                break
+            }
+        }
+
+        return "Couldn't save your profile yet."
     }
 }

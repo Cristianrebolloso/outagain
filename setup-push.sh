@@ -4,14 +4,14 @@
 # Run this from the repo root once you have your APNs .p8 key from Apple.
 # It will:
 #   1. Walk you through getting the APNs key if you haven't yet
-#   2. Deploy the notify-activity edge function
-#   3. Set all required Supabase secrets with the correct names
-#   4. Configure the Postgres trigger settings so it calls the edge function
+#   2. Apply any pending database migrations
+#   3. Deploy the notify-activity edge function
+#   4. Set all required Supabase secrets with the correct names
+#   5. Store the DB trigger's service-role key in Supabase Vault
 #
 # Prerequisites:
 #   - Supabase CLI installed: brew install supabase/tap/supabase
 #   - Logged in to Supabase CLI: supabase login
-#   - psql available (comes with Postgres, or: brew install libpq)
 
 set -euo pipefail
 
@@ -83,11 +83,16 @@ supabase link --project-ref "$SUPABASE_PROJECT_REF" || die "supabase link failed
 ok "Linked to project $SUPABASE_PROJECT_REF."
 
 # ── Step 4: Deploy edge function ───────────────────────────────────────────────
+step "Applying database migrations"
+supabase db push
+ok "Database migrations applied."
+
+# ── Step 5: Deploy edge function ───────────────────────────────────────────────
 step "Deploying notify-activity edge function"
 supabase functions deploy notify-activity
 ok "Edge function deployed."
 
-# ── Step 5: Set secrets (correct names matching index.ts) ─────────────────────
+# ── Step 6: Set secrets (correct names matching index.ts) ─────────────────────
 step "Setting Supabase secrets"
 P8_CONTENTS="$(cat "$P8_PATH")"
 supabase secrets set \
@@ -98,50 +103,52 @@ supabase secrets set \
   APNS_KEY_P8="$P8_CONTENTS"
 ok "Secrets set: APNS_KEY_ID, APNS_TEAM_ID, APNS_BUNDLE_ID, APNS_ENVIRONMENT, APNS_KEY_P8."
 
-# ── Step 6: Set Postgres trigger config ───────────────────────────────────────
-step "Configuring Postgres trigger settings"
+# ── Step 7: Store DB trigger secret in Vault ──────────────────────────────────
+step "Storing the service-role key in Supabase Vault"
 cat <<EOF
 
-  The dispatch_notification_push trigger reads two Postgres settings at
-  runtime to know where to POST. Setting them now via the Management API.
+  The dispatch_notification_push trigger now reads the service-role key from
+  Supabase Vault instead of relying on ALTER DATABASE settings.
+  We'll create or update the Vault secret named:
+
+    supabase_service_role_key
 
 EOF
 
-EDGE_FN_URL="$SUPABASE_URL/functions/v1/notify-activity"
+VAULT_SQL_FILE="$(mktemp)"
+cat > "$VAULT_SQL_FILE" <<EOF
+do \$\$
+declare
+  existing_id uuid;
+begin
+  select id into existing_id
+  from vault.decrypted_secrets
+  where name = 'supabase_service_role_key'
+  limit 1;
 
-# Use the Supabase Management API to run SQL
-SQL="ALTER DATABASE postgres SET app.settings.supabase_url = '$SUPABASE_URL'; ALTER DATABASE postgres SET app.settings.supabase_service_role_key = '$SERVICE_ROLE_KEY';"
+  if existing_id is null then
+    perform vault.create_secret(
+      '${SERVICE_ROLE_KEY}',
+      'supabase_service_role_key',
+      'Out Again push trigger service-role key'
+    );
+  else
+    perform vault.update_secret(
+      existing_id,
+      '${SERVICE_ROLE_KEY}',
+      'supabase_service_role_key',
+      'Out Again push trigger service-role key'
+    );
+  end if;
+end
+\$\$;
+EOF
 
-RESPONSE=$(curl -sS -o /dev/null -w "%{http_code}" \
-  -X POST "$SUPABASE_URL/rest/v1/rpc/exec_sql" \
-  -H "apikey: $SERVICE_ROLE_KEY" \
-  -H "Authorization: Bearer $SERVICE_ROLE_KEY" \
-  -H "Content-Type: application/json" \
-  -d "{\"query\": \"$(echo "$SQL" | tr -d '\n' | sed 's/"/\\"/g')\"}" 2>/dev/null || true)
+supabase db query --linked --file "$VAULT_SQL_FILE" || die "Couldn't write the Vault secret. Make sure Vault is enabled in Supabase."
+rm -f "$VAULT_SQL_FILE"
+ok "Vault secret updated: supabase_service_role_key."
 
-# The above may not work if exec_sql RPC doesn't exist — provide manual fallback
-if [[ "$RESPONSE" != "200" ]]; then
-  warn "Automatic Postgres config failed (this is normal if exec_sql RPC isn't set up)."
-  echo ""
-  echo -e "  ${BOLD}Run this SQL manually in the Supabase SQL editor:${NC}"
-  echo "  https://supabase.com/dashboard/project/$SUPABASE_PROJECT_REF/sql/new"
-  echo ""
-  echo "  ┌─────────────────────────────────────────────────────────────────────┐"
-  echo "  │ ALTER DATABASE postgres                                              │"
-  echo "  │   SET app.settings.supabase_url = '$SUPABASE_URL';     │"
-  echo "  │                                                                     │"
-  echo "  │ ALTER DATABASE postgres                                              │"
-  echo "  │   SET app.settings.supabase_service_role_key = '<your key>';        │"
-  echo "  └─────────────────────────────────────────────────────────────────────┘"
-  echo ""
-  echo "  Replace <your key> with your service_role key (the one you pasted above)."
-  echo ""
-  read -rp "  Press Enter once you've run the SQL above... "
-else
-  ok "Postgres trigger settings configured."
-fi
-
-# ── Step 7: Verify ────────────────────────────────────────────────────────────
+# ── Step 8: Verify ────────────────────────────────────────────────────────────
 step "Verification"
 echo ""
 echo "  Everything should now be wired up. To confirm it works end-to-end:"

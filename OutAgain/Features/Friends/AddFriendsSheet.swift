@@ -56,21 +56,13 @@ private struct FriendRequestRow: View {
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(profile.displayName)
-                    .font(.system(.headline, design: .rounded, weight: .semibold))
+                    .font(AppTypography.rowTitle)
                     .foregroundStyle(.white)
-                Text("@\(profile.username)")
-                    .font(.system(.footnote, design: .rounded))
-                    .foregroundStyle(AppTheme.softText)
+                VerifiedUsernameLabel(profile: profile, font: AppTypography.footnote, badgeSize: 11)
             }
             .layoutPriority(1)
 
             Spacer(minLength: 0)
-
-            if showsChevron {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(AppTheme.softText.opacity(0.8))
-            }
         }
         .contentShape(Rectangle())
     }
@@ -88,7 +80,7 @@ private struct FriendRequestRow: View {
     ) -> some View {
         Button(action: action) {
             Label(title, systemImage: systemImage)
-                .font(.system(.footnote, design: .rounded, weight: .semibold))
+                .font(AppTypography.buttonFootnote)
                 .foregroundStyle(prominence == .primary ? AppTheme.charcoal : .white)
                 .frame(minWidth: 104)
                 .frame(height: 42)
@@ -113,111 +105,329 @@ private struct FriendRequestRow: View {
     }
 }
 
-/// Models the three "discovery" states that materially change this screen's
-/// intent. Each case dictates which module earns the hero slot: contacts
-/// permission sell, invite-forward push, or the default "contacts yielded
-/// people" layout. Keeping this explicit rather than scattered through a
-/// dozen `if` branches means the layout is easier to reason about and the
-/// copywriting per state lives in one place.
-private enum FriendDiscoveryState {
-    /// Contacts permission has never been asked — highest value moment,
-    /// push hard for the grant.
-    case contactsPromptAvailable
-    /// User denied contacts — respect it, collapse the dead surface,
-    /// elevate invite as the alternative path forward.
-    case contactsBlocked
-    /// Contacts granted, backend still matching.
-    case contactsResolving
-    /// Contacts granted but zero matches — pivot the screen into an
-    /// invite-forward stance since the user's people aren't here yet.
-    case contactsEmptyMatchingInvite
-    /// Contacts granted, matches exist — the screen does its default thing.
-    case contactsYieldedMatches
-}
-
 struct AddFriendsSheet: View {
     @Environment(AppStore.self) private var store
-    @Environment(PermissionCenter.self) private var permissions
     @Environment(\.appAccent) private var accent
     @State private var selectedProfile: UserProfile?
+    @State private var inlineProfile: UserProfile?
+    @State private var isDuoExpanded = false
     @State private var isShowingRefreshConfirmation = false
+    @State private var isTabRefreshing = false
+    @State private var friendsScrollOffset: CGFloat = 0
+    @State private var isTitleScrolled = false
+    @State private var didTriggerPullRefresh = false
+    @FocusState private var isSearchFocused: Bool
 
+    @ViewBuilder
     var body: some View {
-        @Bindable var store = store
-
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                header
-                modeToggle(store: store)
-
-                switch store.friendsPageMode {
-                case .people:
-                    peopleSection(store: store)
-                case .discover:
-                    discoverSection(store: store)
-                }
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 12)
-            .padding(.bottom, 120)
-        }
-        .refreshable {
-            await performManualRefresh()
-        }
-        .scrollIndicators(.hidden)
-        // Keep the warm ambient present on the Friends tab. Despite the
-        // name `AddFriendsSheet`, this view is mounted as a top-level
-        // tab (not a sheet) via MainShellView's switch, so the shell's
-        // NavigationStack imposes the same opaque-scroll issue we see
-        // on Home and Profile.
-        .scrollContentBackground(.hidden)
-        .background(Color.clear)
-        .overlay(alignment: .top) {
-            if isShowingRefreshConfirmation {
-                HStack(spacing: 8) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(accent)
-                    Text("Refreshed")
-                        .font(.system(.subheadline, design: .rounded, weight: .semibold))
-                        .foregroundStyle(.white)
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(.black.opacity(0.72), in: Capsule())
-                .overlay(
-                    Capsule()
-                        .strokeBorder(AppTheme.line, lineWidth: 1)
-                )
-                .padding(.top, 8)
-                .transition(.move(edge: .top).combined(with: .opacity))
-            }
-        }
-        .sheet(item: $selectedProfile) { profile in
-            FriendProfileView(profile: profile)
-                .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
-        }
-        .onChange(of: store.friendsTabPendingProfile) { _, pending in
-            guard let pending else { return }
-            store.friendsTabPendingProfile = nil
-            withAnimation(.snappy(duration: 0.22)) {
-                store.friendsPageMode = .people
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                selectedProfile = pending
-            }
-        }
-        .task(id: permissions.contactsStatus) {
-            guard permissions.contactsStatus == .granted else { return }
-            guard store.contactMatches.isEmpty, !store.isSearchingContactMatches else { return }
-            let contacts = await permissions.contactLookupSeeds()
-            store.searchContacts(using: contacts)
+        if store.isDuoDevice {
+            duoFriends
+        } else {
+            phoneFriends
         }
     }
 
-    private func performManualRefresh() async {
-        await store.refreshAppData(silenceErrors: true)
+    @ViewBuilder
+    private var phoneFriends: some View {
+        @Bindable var store = store
 
+        NavigationStack {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    GeometryReader { geo in
+                        Color.clear
+                            .preference(
+                                key: FriendsScrollOffsetKey.self,
+                                value: geo.frame(in: .named("friendsScroll")).minY
+                            )
+                    }
+                    .frame(height: 0)
+                    .id(FriendsScrollAnchor.top)
+
+                    VStack(alignment: .leading, spacing: 24) {
+                        if store.isViewerAdmin {
+                            adminSection(store: store)
+                        } else {
+                            discoverSection(store: store)
+                        }
+                    }
+                    .padding(.horizontal, AppLayout.screenPadding)
+                    .padding(.top, 12)
+                    .padding(.bottom, AppLayout.tabBarClearance)
+                }
+                .onScrollGeometryChange(for: Bool.self) { geometry in
+                    geometry.contentOffset.y + geometry.contentInsets.top > 8
+                } action: { _, isScrolled in
+                    isTitleScrolled = isScrolled
+                }
+                #if DEBUG
+                .modifier(DuoScrollPreviewControls())
+                #endif
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    ScrollingPageTitle(
+                        title: store.isViewerAdmin ? "All Users" : "Add Friends",
+                        isScrolled: isTitleScrolled
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, AppLayout.screenPadding)
+                    .padding(.top, 12)
+                    .padding(.bottom, 12)
+                }
+                .coordinateSpace(name: "friendsScroll")
+                .onPreferenceChange(FriendsScrollOffsetKey.self) { offset in
+                    friendsScrollOffset = offset
+                    if offset > 60 && !isTabRefreshing && !didTriggerPullRefresh {
+                        didTriggerPullRefresh = true
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        Task {
+                            await runManualRefresh()
+                        }
+                    }
+                    if offset <= 0 { didTriggerPullRefresh = false }
+                }
+                .scrollIndicators(.hidden)
+                .scrollBounceBehavior(.always, axes: .vertical)
+                // Keep the warm ambient present on the People tab. Despite the
+                // name `AddFriendsSheet`, this view is mounted as a top-level tab
+                // and needs to paint its own surface like Profile does.
+                .scrollContentBackground(.hidden)
+                .modifier(MainPageSurface())
+                .overlay(alignment: .top) {
+                    if isTabRefreshing {
+                        MainTabRefreshIndicator()
+                            .padding(.top, 8)
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+                }
+                // Tapping anywhere outside the search field dismisses the keyboard.
+                .onTapGesture { isSearchFocused = false }
+                // Prevent keyboard from pushing this view (and the tab bar) upward.
+                .ignoresSafeArea(.keyboard, edges: .bottom)
+                .overlay(alignment: .top) {
+                    if isShowingRefreshConfirmation {
+                        HStack(spacing: 8) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(accent)
+                            Text("Refreshed")
+                                .font(AppTypography.button)
+                                .foregroundStyle(.white)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(.black.opacity(0.72), in: Capsule())
+                        .overlay(
+                            Capsule()
+                                .strokeBorder(AppTheme.line, lineWidth: 1)
+                        )
+                        .padding(.top, 8)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+                }
+                .navigationDestination(item: $selectedProfile) { profile in
+                    FriendProfileView(profile: profile, presentationStyle: .embedded)
+                }
+                .onChange(of: store.selectedTab) { oldTab, newTab in
+                    if oldTab == .friends, newTab != .friends {
+                        isSearchFocused = false
+                    }
+                    guard newTab == .friends, oldTab != .friends else { return }
+                    scrollToTop(proxy)
+                }
+                .onChange(of: store.friendsTabSelectionTrigger) { _, _ in
+                    guard store.selectedTab == .friends else { return }
+                    scrollToTop(proxy)
+                }
+                .task(id: store.friendsTabSelectionTrigger) {
+                    guard store.selectedTab == .friends,
+                          store.friendsTabSelectionTrigger > 0
+                    else { return }
+
+                    scrollToTop(proxy)
+                    await refreshFriendsData()
+                }
+                .onChange(of: store.friendsTabPendingProfile) { _, pending in
+                    guard let pending else { return }
+                    store.friendsTabPendingProfile = nil
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                        selectedProfile = pending
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var duoFriends: some View {
+        @Bindable var store = store
+
+        DuoPageLayout(isExpanded: $isDuoExpanded) {
+            NavigationStack {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        GeometryReader { geo in
+                            Color.clear
+                                .preference(
+                                    key: FriendsScrollOffsetKey.self,
+                                    value: geo.frame(in: .named("friendsScroll")).minY
+                                )
+                        }
+                        .frame(height: 0)
+                        .id(FriendsScrollAnchor.top)
+
+                        VStack(alignment: .leading, spacing: 24) {
+                            if store.isViewerAdmin {
+                                adminSection(store: store)
+                            } else {
+                                discoverSection(store: store)
+                            }
+                        }
+                        .frame(maxWidth: isDuoExpanded ? .infinity : AppLayout.phoneColumnMaximumWidth)
+                        .padding(.horizontal, AppLayout.screenPadding)
+                        .padding(.top, AppLayout.secondaryPageTopPadding)
+                        .padding(.bottom, AppLayout.tabBarClearance)
+                        .frame(maxWidth: .infinity)
+                    }
+                    .onScrollGeometryChange(for: Bool.self) { geometry in
+                        geometry.contentOffset.y + geometry.contentInsets.top > 8
+                    } action: { _, isScrolled in
+                        isTitleScrolled = isScrolled
+                    }
+                    #if DEBUG
+                    .modifier(DuoScrollPreviewControls())
+                    #endif
+                    .coordinateSpace(name: "friendsScroll")
+                    .onPreferenceChange(FriendsScrollOffsetKey.self) { offset in
+                        friendsScrollOffset = offset
+                        if offset > 60 && !isTabRefreshing && !didTriggerPullRefresh {
+                            didTriggerPullRefresh = true
+                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                            Task {
+                                await runManualRefresh()
+                            }
+                        }
+                        if offset <= 0 { didTriggerPullRefresh = false }
+                    }
+                    .modifier(DuoPageViewport())
+                    .toolbarBackground(.hidden, for: .navigationBar)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .modifier(DuoPageHeader(title: store.isViewerAdmin ? "All Users" : "Add Friends", isScrolled: isTitleScrolled))
+                    .scrollIndicators(.hidden)
+                    .defaultScrollAnchor(.top, for: .sizeChanges)
+                    .scrollBounceBehavior(.always, axes: .vertical)
+                    // Keep the warm ambient present on the People tab. Despite the
+                    // name `AddFriendsSheet`, this view is mounted as a top-level tab
+                    // and needs to paint its own surface like Profile does.
+                    .scrollContentBackground(.hidden)
+                    .modifier(MainPageSurface())
+                    .overlay(alignment: .top) {
+                        if isTabRefreshing {
+                            MainTabRefreshIndicator()
+                                .padding(.top, 8)
+                                .transition(.move(edge: .top).combined(with: .opacity))
+                        }
+                    }
+                    // Tapping anywhere outside the search field dismisses the keyboard.
+                    .onTapGesture { isSearchFocused = false }
+                    // Prevent keyboard from pushing this view (and the tab bar) upward.
+                    .ignoresSafeArea(.keyboard, edges: .bottom)
+                    .overlay(alignment: .top) {
+                        if isShowingRefreshConfirmation {
+                            HStack(spacing: 8) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundStyle(accent)
+                                Text("Refreshed")
+                                    .font(AppTypography.button)
+                                    .foregroundStyle(.white)
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .background(.black.opacity(0.72), in: Capsule())
+                            .overlay(
+                                Capsule()
+                                    .strokeBorder(AppTheme.line, lineWidth: 1)
+                            )
+                            .padding(.top, 8)
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                        }
+                    }
+                    .navigationDestination(item: $selectedProfile) { profile in
+                        FriendProfileView(profile: profile, presentationStyle: .embedded)
+                    }
+                    .onChange(of: store.selectedTab) { oldTab, newTab in
+                        if oldTab == .friends, newTab != .friends {
+                            isSearchFocused = false
+                        }
+                        guard newTab == .friends, oldTab != .friends else { return }
+                        scrollToTop(proxy)
+                    }
+                    .onChange(of: store.friendsTabSelectionTrigger) { _, _ in
+                        guard store.selectedTab == .friends else { return }
+                        scrollToTop(proxy)
+                    }
+                    .task(id: store.friendsTabSelectionTrigger) {
+                        guard store.selectedTab == .friends,
+                            store.friendsTabSelectionTrigger > 0
+                        else { return }
+
+                        scrollToTop(proxy)
+                        await refreshFriendsData()
+                    }
+                    .onChange(of: store.friendsTabPendingProfile) { _, pending in
+                        guard let pending else { return }
+                        store.friendsTabPendingProfile = nil
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                            openProfile(pending)
+                        }
+                    }
+                }
+            }
+        } companion: {
+            FriendsCompanionView(selectedProfile: $inlineProfile)
+        }
+    }
+
+    private func openProfile(_ profile: UserProfile) {
+        if store.isDuoDevice {
+            isSearchFocused = false
+            if isDuoExpanded { inlineProfile = profile }
+            else { selectedProfile = profile }
+        } else {
+            selectedProfile = profile
+        }
+    }
+
+    private func scrollToTop(_ proxy: ScrollViewProxy) {
+        isSearchFocused = false
+        DispatchQueue.main.async {
+            proxy.scrollTo(FriendsScrollAnchor.top, anchor: .top)
+        }
+    }
+
+    private func runManualRefresh() async {
+        let refreshStartedAt = Date()
+        await MainActor.run {
+            withAnimation(.easeInOut(duration: 0.18)) {
+                isTabRefreshing = true
+            }
+        }
+
+        await refreshFriendsData()
+        await MainTabRefreshFeedback.waitForMinimumVisibleDuration(since: refreshStartedAt)
+
+        await MainActor.run {
+            withAnimation(.easeInOut(duration: 0.18)) {
+                isTabRefreshing = false
+            }
+        }
+
+        await showRefreshConfirmation()
+    }
+
+    private func refreshFriendsData() async {
+        await store.refreshAppData(silenceErrors: true)
+    }
+
+    private func showRefreshConfirmation() async {
         await MainActor.run {
             withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
                 isShowingRefreshConfirmation = true
@@ -233,103 +443,6 @@ struct AddFriendsSheet: View {
         }
     }
 
-    private var discoveryState: FriendDiscoveryState {
-        switch permissions.contactsStatus {
-        case .notDetermined:
-            return .contactsPromptAvailable
-        case .granted:
-            if store.isSearchingContactMatches {
-                return .contactsResolving
-            }
-            return store.contactMatches.isEmpty
-                ? .contactsEmptyMatchingInvite
-                : .contactsYieldedMatches
-        default:
-            return .contactsBlocked
-        }
-    }
-
-    /// Renders the contacts + invite modules in the correct order and
-    /// prominence for the given state. `compact` is true when an active
-    /// search query already owns the hero slot — in that mode both modules
-    /// render in a quieter form below the results.
-    @ViewBuilder
-    private func discoverySections(state: FriendDiscoveryState, compact: Bool) -> some View {
-        switch state {
-        case .contactsPromptAvailable:
-            // Highest-value CTA on the screen. Lead with it.
-            if !compact { contactsPermissionPitch }
-            inviteSection(tone: .secondary)
-            if compact { contactsPermissionPitch }
-
-        case .contactsBlocked:
-            // Contacts are dead. Invite becomes the primary path.
-            inviteSection(tone: .primary)
-
-        case .contactsResolving:
-            contactsResolvingPlaceholder
-            inviteSection(tone: .secondary)
-
-        case .contactsEmptyMatchingInvite:
-            // User opted in, no matches — pivot to invite-forward. The
-            // headline itself carries the acknowledgement; no need for a
-            // second line repeating "we checked."
-            inviteSection(tone: .primary, headline: "None of your people are here yet")
-
-        case .contactsYieldedMatches:
-            contactsMatchesSection
-            inviteSection(tone: .secondary)
-        }
-    }
-
-    private var header: some View {
-        Text(store.friendsPageMode.title)
-            .font(.system(size: 32, weight: .bold, design: .serif))
-            .foregroundStyle(.white)
-    }
-
-    @Namespace private var modeNamespace
-
-    private func modeToggle(store: AppStore) -> some View {
-        GlassEffectContainer(spacing: 0) {
-            HStack(spacing: 6) {
-                modeButton(title: "Add Friends", mode: .discover, store: store)
-                modeButton(title: "Friends", mode: .people, store: store)
-            }
-            .padding(6)
-            .background(.white.opacity(0.05), in: Capsule())
-            .overlay(Capsule().strokeBorder(.white.opacity(0.12), lineWidth: 1))
-            .glassEffect(.regular, in: .capsule)
-        }
-    }
-
-    private func modeButton(title: String, mode: FriendsPageMode, store: AppStore) -> some View {
-        let isSelected = store.friendsPageMode == mode
-
-        return Button {
-            withAnimation(.snappy(duration: 0.22)) {
-                store.friendsPageMode = mode
-            }
-        } label: {
-            ZStack {
-                if isSelected {
-                    Capsule()
-                        .fill(.white.opacity(0.11))
-                        .overlay(Capsule().strokeBorder(.white.opacity(0.18), lineWidth: 1))
-                        .glassEffect(.regular.interactive(), in: .capsule)
-                        .matchedGeometryEffect(id: "friends_mode_selection", in: modeNamespace)
-                }
-                Text(title)
-                    .font(.system(.subheadline, design: .rounded, weight: .semibold))
-                    .foregroundStyle(isSelected ? .white : AppTheme.softText)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 42)
-            }
-            .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-    }
-
     @ViewBuilder
     private func peopleSection(store: AppStore) -> some View {
         searchCard(store: store)
@@ -337,28 +450,28 @@ struct AddFriendsSheet: View {
         if store.friends.isEmpty {
             emptyFriendsState(store: store)
         } else {
-            let query = store.friendSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let query = PeopleSearchRules.normalized(store.friendSearchQuery)
             let filtered = query.isEmpty ? store.friends : store.friends.filter {
                 $0.displayName.lowercased().contains(query) || $0.username.lowercased().contains(query)
             }
 
             VStack(alignment: .leading, spacing: 12) {
                 Text("\(store.friends.count) friends")
-                    .font(.system(size: 28, weight: .bold, design: .serif))
+                    .font(AppTypography.sectionTitle)
                     .foregroundStyle(.white)
 
-                NightPanel(cornerRadius: 28, padding: 12) {
+                NightPanel(cornerRadius: AppLayout.panelRadius, padding: 12) {
                     VStack(spacing: 8) {
                         if filtered.isEmpty {
                             Text("No friends match \"\(store.friendSearchQuery)\"")
-                                .font(.system(.subheadline, design: .rounded))
+                                .font(AppTypography.rowSubtitle)
                                 .foregroundStyle(AppTheme.softText)
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 12)
                         } else {
                             ForEach(filtered) { friend in
                                 ExistingFriendRow(profile: friend) {
-                                    selectedProfile = friend
+                                    openProfile(friend)
                                 }
                             }
                         }
@@ -369,15 +482,11 @@ struct AddFriendsSheet: View {
     }
 
     private func emptyFriendsState(store: AppStore) -> some View {
-        NightPanel(cornerRadius: 28, padding: 18) {
+        NightPanel(cornerRadius: AppLayout.panelRadius, padding: 16) {
             VStack(alignment: .leading, spacing: 12) {
-                Text("No friends here yet")
-                    .font(.system(.title3, design: .rounded, weight: .bold))
+                Text("No friends yet")
+                    .font(AppTypography.sectionTitle)
                     .foregroundStyle(.white)
-
-                Text("Add the people you actually go out with, and they'll show up here as their own profiles.")
-                    .font(.system(.subheadline, design: .rounded))
-                    .foregroundStyle(AppTheme.softText)
 
                 Button {
                     withAnimation(.snappy(duration: 0.22)) {
@@ -385,32 +494,113 @@ struct AddFriendsSheet: View {
                     }
                 } label: {
                     Label("Add friends", systemImage: "person.badge.plus")
-                        .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                        .font(AppTypography.button)
                         .foregroundStyle(.white)
                         .frame(maxWidth: .infinity)
                         .frame(height: 50)
-                        .background(.white.opacity(0.10), in: Capsule())
-                        .overlay(Capsule().strokeBorder(.white.opacity(0.22), lineWidth: 1))
+                        .background(.white.opacity(0.04), in: Capsule())
+                        .overlay(Capsule().strokeBorder(.white.opacity(0.10), lineWidth: 1))
                         .glassEffect(.regular.interactive(), in: .capsule)
+                        .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
+                .contentShape(Capsule())
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func adminSection(store: AppStore) -> some View {
+        // Search — read-only, no Add button
+        searchCard(store: store)
+
+        if hasActiveQuery {
+            searchResultsSection
+        } else {
+            // All users list, batched 10 at a time
+            VStack(alignment: .leading, spacing: 12) {
+                NightPanel(cornerRadius: AppLayout.panelRadius, padding: 12) {
+                    VStack(spacing: 8) {
+                        if store.adminAllUsers.isEmpty && !store.isLoadingAdminUsers {
+                            Text("No users loaded yet")
+                                .font(AppTypography.rowSubtitle)
+                                .foregroundStyle(AppTheme.softText)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 12)
+                        } else {
+                            ForEach(store.adminAllUsers) { user in
+                                AdminUserRow(
+                                    profile: user,
+                                    isBusy: store.adminBusyUserIDs.contains(user.id),
+                                    onOpen: {
+                                        openProfile(user)
+                                    }
+                                )
+                            }
+
+                            if store.isLoadingAdminUsers {
+                                HStack {
+                                    Spacer()
+                                    ProgressView()
+                                        .tint(accent)
+                                        .padding(.vertical, 10)
+                                    Spacer()
+                                }
+                            } else if store.hasMoreAdminUsers {
+                                Button {
+                                    store.loadAdminUsersNextPage()
+                                } label: {
+                                    Text("Load more")
+                                        .font(AppTypography.button)
+                                        .foregroundStyle(accent)
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 10)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                }
+
+                if let message = store.adminStatusMessage {
+                    Label(message, systemImage: "checkmark.circle.fill")
+                        .font(AppTypography.buttonFootnote)
+                        .foregroundStyle(accent)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                }
+            }
+            .task {
+                if store.adminAllUsers.isEmpty {
+                    store.loadAdminUsersNextPage()
+                }
             }
         }
     }
 
     @ViewBuilder
     private func discoverSection(store: AppStore) -> some View {
-        if !store.incomingFriendRequests.isEmpty {
-            incomingRequestsSection
-        }
-
+        // Order is fixed regardless of state: search first, requests
+        // second, suggested third. Putting search at the top means the
+        // primary action (find a specific person by handle) is always one
+        // tap away, even when the requests/suggestions sections are tall
+        // enough to push it off-screen. Requests above suggestions because
+        // an inbound request is a higher-intent signal than a suggestion.
         searchCard(store: store)
 
         if hasActiveQuery {
             searchResultsSection
-            discoverySections(state: discoveryState, compact: true)
         } else {
-            discoverySections(state: discoveryState, compact: false)
+            if !store.incomingFriendRequests.isEmpty {
+                incomingRequestsSection
+            }
+
+            let suggestedWithMutuals = store.suggestedFriends.filter {
+                (store.mutualCounts[$0.id] ?? 0) > 0
+            }
+            if !suggestedWithMutuals.isEmpty {
+                suggestedFriendsSection(candidates: suggestedWithMutuals, store: store)
+            }
         }
 
         if !store.outgoingFriendRequests.isEmpty {
@@ -418,22 +608,54 @@ struct AddFriendsSheet: View {
         }
     }
 
+    private func suggestedFriendsSection(candidates: [UserProfile], store: AppStore) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            NightPanel(cornerRadius: AppLayout.panelRadius, padding: 12) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Suggestions")
+                        .font(AppTypography.rowTitle)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 4)
+
+                    VStack(spacing: 10) {
+                        ForEach(candidates) { candidate in
+                            SuggestedFriendRow(
+                                profile: candidate,
+                                mutualCount: store.mutualCounts[candidate.id] ?? 0,
+                                onOpen: { openProfile(candidate) },
+                                onAdd: {
+                                    withAnimation(.snappy(duration: 0.24)) {
+                                        store.sendFriendRequest(to: candidate)
+                                    }
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private func searchCard(store: AppStore) -> some View {
         @Bindable var store = store
 
-        return NightPanel(cornerRadius: 28, padding: 16) {
+        return NightPanel(cornerRadius: AppLayout.panelRadius, padding: 14) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 10) {
                     Image(systemName: "magnifyingglass")
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(AppTheme.softText)
 
-                    TextField("Search by @username", text: $store.friendSearchQuery)
-                        .font(.system(.body, design: .rounded))
+                    TextField(
+                        "Search friends or @username",
+                        text: $store.friendSearchQuery
+                    )
+                        .font(AppTypography.searchInput)
                         .foregroundStyle(.white)
                         .tint(.white)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .focused($isSearchFocused)
                         .onChange(of: store.friendSearchQuery) { _, _ in
                             store.searchForFriends()
                         }
@@ -451,10 +673,10 @@ struct AddFriendsSheet: View {
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 12)
-                .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .strokeBorder(.white.opacity(0.14), lineWidth: 1)
+                        .strokeBorder(.white.opacity(0.10), lineWidth: 1)
                 )
                 .glassEffect(.regular, in: .rect(cornerRadius: 20))
             }
@@ -465,28 +687,90 @@ struct AddFriendsSheet: View {
         !store.friendSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    private var matchingFriendsForSearch: [UserProfile] {
+        let rawQuery = store.friendSearchQuery
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let usernameQuery = UsernameRules.searchFragment(store.friendSearchQuery)
+
+        guard !rawQuery.isEmpty else { return [] }
+
+        return store.friends.filter { friend in
+            friend.displayName.lowercased().contains(rawQuery)
+                || (!usernameQuery.isEmpty && friend.username.lowercased().contains(usernameQuery))
+        }
+    }
+
     @ViewBuilder
     private var searchResultsSection: some View {
+        let matchingFriends = store.isViewerAdmin ? [] : matchingFriendsForSearch
+        let addableResults = store.friendSearchResults
+
         VStack(alignment: .leading, spacing: 12) {
             SectionEyebrow(title: "Results")
 
-            NightPanel(cornerRadius: 28, padding: 12) {
-                if store.friendSearchResults.isEmpty {
+            NightPanel(cornerRadius: AppLayout.panelRadius, padding: 12) {
+                if matchingFriends.isEmpty && addableResults.isEmpty && store.isSearchingFriends {
+                    ProgressView("Searching…")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                } else if let message = store.friendSearchError, matchingFriends.isEmpty && addableResults.isEmpty {
+                    Text(message)
+                        .font(AppTypography.rowSubtitle)
+                        .foregroundStyle(AppTheme.softText)
+                        .padding(10)
+                } else if matchingFriends.isEmpty && addableResults.isEmpty {
                     sectionMessage(
-                        title: "No matches yet",
-                        detail: "Nobody matching that username is on Out Again yet. Send them an invite below."
+                        title: "No results found",
+                        detail: nil
                     )
                 } else {
-                    VStack(spacing: 10) {
-                        ForEach(store.friendSearchResults) { candidate in
-                            FriendRow(
-                                profile: candidate,
-                                onOpen: {
-                                    selectedProfile = candidate
+                    VStack(alignment: .leading, spacing: 14) {
+                        if !matchingFriends.isEmpty {
+                            resultGroupTitle("Friends")
+
+                            VStack(spacing: 8) {
+                                ForEach(matchingFriends) { friend in
+                                    ExistingFriendRow(profile: friend) {
+                                        openProfile(friend)
+                                    }
                                 }
-                            ) {
-                                withAnimation(.snappy(duration: 0.24)) {
-                                    store.sendFriendRequest(to: candidate)
+                            }
+                        }
+
+                        if !matchingFriends.isEmpty && !addableResults.isEmpty {
+                            Divider()
+                                .overlay(AppTheme.line)
+                                .padding(.horizontal, 4)
+                        }
+
+                        if !addableResults.isEmpty {
+                            if !store.isViewerAdmin {
+                                resultGroupTitle("Add Friends")
+                            }
+
+                            VStack(spacing: 10) {
+                                ForEach(addableResults) { candidate in
+                                    if store.isViewerAdmin {
+                                        AdminUserRow(
+                                            profile: candidate,
+                                            isBusy: store.adminBusyUserIDs.contains(candidate.id),
+                                            onOpen: {
+                                                openProfile(candidate)
+                                            }
+                                        )
+                                    } else {
+                                        FriendRow(
+                                            profile: candidate,
+                                            onOpen: {
+                                                openProfile(candidate)
+                                            }
+                                        ) {
+                                            withAnimation(.snappy(duration: 0.24)) {
+                                                store.sendFriendRequest(to: candidate)
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -496,95 +780,20 @@ struct AddFriendsSheet: View {
         }
     }
 
-    // MARK: - Contacts discovery modules
-    //
-    // Each of these renders a focused slice of the contacts-discovery surface.
-    // The state machine in `discoverySections(state:compact:)` decides which
-    // ones appear, in what order, and whether the invite card plays primary
-    // or secondary. None of them knows about the others — that separation is
-    // what keeps the layout legible as we add more states.
-
-    /// Full-strength pitch for granting contacts permission. Used only when
-    /// the user hasn't been asked yet — the highest-leverage moment on the
-    /// whole screen. Don't let it live in a tiny row; the prompt itself is
-    /// the hero until it's answered.
-    private var contactsPermissionPitch: some View {
-        NightPanel(cornerRadius: 28, padding: 18, tint: accent.opacity(0.12), interactive: true) {
-            VStack(alignment: .leading, spacing: 12) {
-                Label {
-                    Text("Find friends you already know")
-                        .font(.system(.headline, design: .rounded, weight: .semibold))
-                        .foregroundStyle(.white)
-                } icon: {
-                    Image(systemName: "person.2.fill")
-                        .foregroundStyle(accent)
-                }
-
-                Button {
-                    Task { await permissions.requestContacts() }
-                } label: {
-                    Label("Turn on contacts", systemImage: "checkmark.circle.fill")
-                        .font(.system(.subheadline, design: .rounded, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 50)
-                        .background(.white.opacity(0.10), in: Capsule())
-                        .overlay(Capsule().strokeBorder(.white.opacity(0.22), lineWidth: 1))
-                        .glassEffect(.regular.interactive(), in: .capsule)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-    }
-
-    /// Resolving state while the backend matches contacts. Minimal chrome —
-    /// a progress affordance so the user knows we're working, nothing more.
-    private var contactsResolvingPlaceholder: some View {
-        NightPanel(cornerRadius: 28, padding: 12) {
-            HStack(spacing: 12) {
-                ProgressView().tint(accent)
-                Text("Checking your contacts against Out Again…")
-                    .font(.system(.subheadline, design: .rounded))
-                    .foregroundStyle(AppTheme.softText)
-                Spacer()
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 12)
-        }
-    }
-
-    /// The happy path: contacts resolved to actual friend candidates.
-    private var contactsMatchesSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            SectionEyebrow(title: "Suggested", detail: "From your contacts")
-
-            NightPanel(cornerRadius: 28, padding: 12) {
-                VStack(spacing: 10) {
-                    ForEach(store.contactMatches) { candidate in
-                        FriendRow(
-                            profile: candidate,
-                            onOpen: {
-                                selectedProfile = candidate
-                            }
-                        ) {
-                            withAnimation(.snappy(duration: 0.24)) {
-                                store.sendFriendRequest(to: candidate)
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    private func resultGroupTitle(_ title: String) -> some View {
+        Text(title)
+            .font(AppTypography.buttonFootnote)
+            .foregroundStyle(AppTheme.softText)
+            .textCase(.uppercase)
+            .tracking(0.8)
+            .padding(.horizontal, 4)
     }
 
     private var incomingRequestsSection: some View {
+        // No eyebrow — the Accept/Ignore buttons in the row tell the user
+        // exactly what these are without a header.
         VStack(alignment: .leading, spacing: 12) {
-            SectionEyebrow(
-                title: "Requests",
-                detail: "\(store.incomingFriendRequests.count) waiting on you"
-            )
-
-            NightPanel(cornerRadius: 28, padding: 12) {
+            NightPanel(cornerRadius: AppLayout.panelRadius, padding: 12) {
                 VStack(spacing: 10) {
                     ForEach(store.incomingFriendRequests) { request in
                         FriendRequestRow(
@@ -603,7 +812,7 @@ struct AddFriendsSheet: View {
                                 }
                             },
                             onOpen: {
-                                selectedProfile = request.counterpart
+                                openProfile(request.counterpart)
                             }
                         )
                     }
@@ -619,7 +828,7 @@ struct AddFriendsSheet: View {
                 detail: "Waiting for them"
             )
 
-            NightPanel(cornerRadius: 28, padding: 12) {
+            NightPanel(cornerRadius: AppLayout.panelRadius, padding: 12) {
                 VStack(spacing: 10) {
                     ForEach(store.outgoingFriendRequests) { request in
                         FriendRequestRow(
@@ -634,7 +843,7 @@ struct AddFriendsSheet: View {
                             secondaryTitle: nil,
                             secondaryAction: nil,
                             onOpen: {
-                                selectedProfile = request.counterpart
+                                openProfile(request.counterpart)
                             }
                         )
                     }
@@ -643,110 +852,22 @@ struct AddFriendsSheet: View {
         }
     }
 
-    /// Visual weight for the invite card. `primary` makes invite the hero of
-    /// the screen (used when contacts can't carry their weight — blocked or
-    /// yielded zero matches). `secondary` is the quieter default: still
-    /// prominent enough to matter, but it doesn't compete with a section
-    /// above it that already owns the user's attention.
-    private enum InviteTone {
-        case primary
-        case secondary
-
-        var tint: Color {
-            switch self {
-            case .primary: return .clear
-            case .secondary: return .clear
-            }
-        }
-
-        var headlineFont: Font {
-            switch self {
-            case .primary: return .system(.title3, design: .rounded, weight: .bold)
-            case .secondary: return .system(.headline, design: .rounded, weight: .semibold)
-            }
-        }
-
-        var buttonHeight: CGFloat {
-            switch self {
-            case .primary: return 54
-            case .secondary: return 48
-            }
-        }
-
-        var buttonTitle: String {
-            switch self {
-            case .primary: return "Share invite link"
-            case .secondary: return "Share invite link"
-            }
-        }
-
-        var padding: CGFloat {
-            switch self {
-            case .primary: return 20
-            case .secondary: return 16
-            }
-        }
-
-        var detailText: String {
-            switch self {
-            case .primary:
-                return "Share your link and when they join, you'll both see each other's nights out."
-            case .secondary:
-                return "Share your link and when they join, you'll both see each other's nights out."
-            }
-        }
-    }
-
-    private func inviteSection(
-        tone: InviteTone,
-        headline: String = "Send an invite"
-    ) -> some View {
-        NightPanel(
-            cornerRadius: 28,
-            padding: tone.padding,
-            tint: tone.tint,
-            interactive: true
-        ) {
-            VStack(alignment: .leading, spacing: 12) {
-                Text(headline)
-                    .font(tone.headlineFont)
-                    .foregroundStyle(.white)
-
-                Text(tone.detailText)
-                    .font(.system(.subheadline, design: .rounded))
-                    .foregroundStyle(AppTheme.softText)
-
-                if let url = URL(string: store.onboardingDraft.inviteLink) {
-                    ShareLink(item: url) {
-                        Label(tone.buttonTitle, systemImage: "square.and.arrow.up")
-                            .font(.system(.subheadline, design: .rounded, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: tone.buttonHeight)
-                            .background(.white.opacity(0.10), in: Capsule())
-                            .overlay(Capsule().strokeBorder(.white.opacity(0.22), lineWidth: 1))
-                            .glassEffect(.regular.interactive(), in: .capsule)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        }
-    }
-
     private func sectionMessage(
         title: String,
-        detail: String,
+        detail: String? = nil,
         buttonTitle: String? = nil,
         action: (() -> Void)? = nil
     ) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(title)
-                .font(.system(.headline, design: .rounded, weight: .semibold))
+                .font(AppTypography.rowTitle)
                 .foregroundStyle(.white)
 
-            Text(detail)
-                .font(.system(.subheadline, design: .rounded))
-                .foregroundStyle(AppTheme.softText)
+            if let detail {
+                Text(detail)
+                    .font(AppTypography.rowSubtitle)
+                    .foregroundStyle(AppTheme.softText)
+            }
 
             if let buttonTitle, let action {
                 Button(buttonTitle, action: action)
@@ -760,7 +881,7 @@ struct AddFriendsSheet: View {
 
 }
 
-private struct ExistingFriendRow: View {
+struct ExistingFriendRow: View {
     let profile: UserProfile
     let onOpen: () -> Void
 
@@ -771,24 +892,62 @@ private struct ExistingFriendRow: View {
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(profile.displayName)
-                        .font(.system(.headline, design: .rounded, weight: .semibold))
+                        .font(AppTypography.rowTitle)
                         .foregroundStyle(.white)
-                    Text("@\(profile.username)")
-                        .font(.system(.footnote, design: .rounded))
-                        .foregroundStyle(AppTheme.softText)
+                    VerifiedUsernameLabel(profile: profile, font: AppTypography.footnote, badgeSize: 11)
                 }
 
                 Spacer()
-
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(AppTheme.softText.opacity(0.8))
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 10)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+private struct AdminUserRow: View {
+    @Environment(\.appAccent) private var accent
+    let profile: UserProfile
+    let isBusy: Bool
+    let onOpen: () -> Void
+
+    var body: some View {
+        Button(action: onOpen) {
+            HStack(spacing: 14) {
+                TonightAvatarView(avatar: profile.avatar, userID: profile.id, size: 48)
+
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 8) {
+                        Text(profile.displayName)
+                            .font(AppTypography.rowTitle)
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+
+                        if profile.isBanned {
+                            Label("Banned", systemImage: "nosign")
+                                .font(AppTypography.badgeStrong)
+                                .foregroundStyle(.red.opacity(0.95))
+                                .labelStyle(.titleAndIcon)
+                        }
+                    }
+
+                    VerifiedUsernameLabel(profile: profile, font: AppTypography.footnote, badgeSize: 11)
+                }
+
+                Spacer(minLength: 0)
+
+                if isBusy {
+                    ProgressView()
+                        .tint(accent)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 10)
     }
 }
 
@@ -805,18 +964,12 @@ private struct FriendRow: View {
 
                     VStack(alignment: .leading, spacing: 3) {
                         Text(profile.displayName)
-                            .font(.system(.headline, design: .rounded, weight: .semibold))
+                            .font(AppTypography.rowTitle)
                             .foregroundStyle(.white)
-                        Text("@\(profile.username)")
-                            .font(.system(.footnote, design: .rounded))
-                            .foregroundStyle(AppTheme.softText)
+                        VerifiedUsernameLabel(profile: profile, font: AppTypography.footnote, badgeSize: 11)
                     }
 
                     Spacer()
-
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(AppTheme.softText.opacity(0.8))
                 }
                 .contentShape(Rectangle())
             }
@@ -826,13 +979,158 @@ private struct FriendRow: View {
 
             Button(action: onAdd) {
                 Label("Add", systemImage: "person.badge.plus")
-                    .font(.system(.footnote, design: .rounded, weight: .semibold))
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
+                    .font(AppTypography.buttonFootnote)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 9)
+                    .primaryGlass(in: .capsule, interactive: true)
+                    .contentShape(Capsule())
             }
-            .buttonStyle(.glass)
+            .buttonStyle(.plain)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
     }
+}
+
+/// A friend suggestion row that shows the candidate's name/handle alongside
+/// an "N mutual" badge and an Add button. The mutual count is always ≥ 1
+/// (rows with zero mutuals are filtered out before reaching this view).
+private struct SuggestedFriendRow: View {
+    @Environment(AppStore.self) private var store
+    let profile: UserProfile
+    let mutualCount: Int
+    let onOpen: () -> Void
+    let onAdd: () -> Void
+
+    @ViewBuilder
+    var body: some View {
+        if store.isDuoDevice { duoRow }
+        else { phoneRow }
+    }
+
+    // Preserve the regular iPhone row independently of Duo pane adaptations.
+    private var phoneRow: some View {
+        HStack(spacing: 14) {
+            Button(action: onOpen) {
+                HStack(spacing: 14) {
+                    TonightAvatarView(avatar: profile.avatar, userID: profile.id, size: 48)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(profile.displayName)
+                            .font(AppTypography.rowTitle)
+                            .foregroundStyle(.white)
+
+                        HStack(spacing: 4) {
+                            VerifiedUsernameLabel(
+                                profile: profile,
+                                font: AppTypography.footnote,
+                                badgeSize: 11
+                            )
+                        }
+
+                        // Mutual count badge — sits below the username so the
+                        // identity row stays clean and the social signal reads
+                        // as supplementary rather than competing with the name.
+                        Label(mutualCount == 1 ? "1 mutual" : "\(mutualCount) mutuals",
+                              systemImage: "person.2.fill")
+                            .font(AppTypography.badge)
+                            .foregroundStyle(AppTheme.softText)
+                    }
+
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Button(action: onAdd) {
+                Label("Add", systemImage: "person.badge.plus")
+                    .font(AppTypography.buttonFootnote)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 9)
+                    .primaryGlass(in: .capsule, interactive: true)
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+    }
+
+    private var duoRow: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                identityButton
+                    .layoutPriority(1)
+                addButton
+            }
+
+            // Preserve readable metadata when a narrow pane or larger text
+            // cannot fit the identity and action on the same line.
+            VStack(alignment: .leading, spacing: 10) {
+                identityButton
+                addButton.frame(maxWidth: .infinity, alignment: .trailing)
+            }
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 8)
+    }
+
+    private var identityButton: some View {
+        Button(action: onOpen) {
+            HStack(spacing: 12) {
+                TonightAvatarView(avatar: profile.avatar, userID: profile.id, size: 48)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(profile.displayName)
+                        .font(AppTypography.rowTitle)
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+
+                    VerifiedUsernameLabel(
+                        profile: profile,
+                        font: AppTypography.footnote,
+                        badgeSize: 11
+                    )
+                    .lineLimit(1)
+
+                    Label(mutualCount == 1 ? "1 mutual" : "\(mutualCount) mutuals",
+                          systemImage: "person.2.fill")
+                        .font(AppTypography.badge)
+                        .foregroundStyle(AppTheme.softText)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var addButton: some View {
+        Button(action: onAdd) {
+            Label("Add", systemImage: "person.badge.plus")
+                .font(AppTypography.buttonFootnote)
+                .foregroundStyle(.white)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 9)
+                .primaryGlass(in: .capsule, interactive: true)
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+}
+
+private struct FriendsScrollOffsetKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+}
+
+private enum FriendsScrollAnchor: Hashable {
+    case top
 }

@@ -62,45 +62,27 @@ struct TonightActivityStrip: View {
     @Environment(\.appAccent) private var accent
     @State private var clock: Date = .now
 
-    private var entries: [AppStore.TonightEntry] { store.tonightEntries }
+    private var entries: [AppStore.TonightEntry] {
+        store.tonightEntries.filter { $0.hasPostedTonight }
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            header
-                .padding(.horizontal, 20)
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 14) {
-                    // Group tiles appear before individual friend tiles.
-                    // Existing groups first, then the create button.
-                    ForEach(store.nightGroups) { group in
-                        groupTile(for: group)
-                    }
-
-                    createGroupButton
-
-                    // Divider between group cluster and friends, only when
-                    // groups exist so the strip doesn't gain visual weight
-                    // when empty.
-                    if !store.nightGroups.isEmpty {
-                        Rectangle()
-                            .fill(AppTheme.line)
-                            .frame(width: 1, height: 48)
-                            .padding(.horizontal, 2)
-                    }
-
-                    ForEach(entries) { entry in
-                        tile(for: entry)
-                    }
+        VStack(alignment: .leading, spacing: 4) {
+            if entries.isEmpty && store.nightGroups.isEmpty {
+                Button(action: onCreateGroupTap) {
+                    Label("Create Group", systemImage: "person.badge.plus")
+                        .font(AppTypography.buttonFootnote)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
                 }
-                // Leading 20pt aligns tiles with the rest of the feed content.
-                // Trailing 20pt gives the last tile breathing room so its
-                // avatar ring is never clipped by the screen edge.
-                .padding(.leading, 20)
-                .padding(.trailing, 20)
+                .buttonStyle(.glass)
+                .foregroundStyle(.white)
+                .tint(.white)
+                .padding(.horizontal, AppLayout.screenPadding)
                 .padding(.vertical, 4)
+            } else {
+                storyTiles
             }
-            .scrollIndicators(.hidden)
         }
         .task {
             // 30-second heartbeat keeps time-ago labels fresh and lets
@@ -114,23 +96,30 @@ struct TonightActivityStrip: View {
         }
     }
 
-    // MARK: - Header
+    private var storyTiles: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 14) {
+                ForEach(store.nightGroups) { group in
+                    groupTile(for: group)
+                }
 
-    private var header: some View {
-        HStack(spacing: 8) {
-            Text("Tonight")
-                .font(.system(.subheadline, design: .rounded, weight: .bold))
-                .foregroundStyle(.white)
+                createGroupButton
 
-            if store.hasAnyFriendPostedTonight {
-                Circle()
-                    .fill(accent)
-                    .frame(width: 6, height: 6)
-                    .opacity(0.9)
+                if !store.nightGroups.isEmpty {
+                    Rectangle()
+                        .fill(AppTheme.line)
+                        .frame(width: 1, height: 48)
+                        .padding(.horizontal, 2)
+                }
+
+                ForEach(entries) { entry in
+                    tile(for: entry)
+                }
             }
-
-            Spacer(minLength: 0)
+            .padding(.horizontal, AppLayout.screenPadding)
+            .padding(.vertical, 4)
         }
+        .scrollIndicators(.hidden)
     }
 
     // MARK: - Tiles
@@ -160,25 +149,24 @@ struct TonightActivityStrip: View {
                     // across active and inactive tiles.
                     .padding(.bottom, 10)
 
-                Text(entry.isViewer ? "You" : entry.profile.displayName.firstName)
-                    .font(.system(.caption, design: .rounded, weight: .semibold))
-                    .foregroundStyle(entry.hasPostedTonight ? .white : AppTheme.softText)
-                    .lineLimit(1)
-                    .frame(maxWidth: 68)
-                    .minimumScaleFactor(0.8)
+                VerifiedProfileLabel(profile: entry.profile, spacing: 1, badgeSize: 8, badgeOffsetY: -0.35) {
+                    Text(entry.isViewer ? "You" : entry.profile.displayName.firstName)
+                        .font(AppTypography.metadataEmphasis)
+                        .foregroundStyle(entry.hasPostedTonight ? .white : AppTheme.softText)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                }
+                .frame(maxWidth: 68)
 
                 if entry.hasPostedTonight, let lastPosted = entry.lastPostedAt {
                     Text(Self.compactTimeAgo(from: lastPosted, now: clock))
-                        .font(.system(size: 10, weight: .semibold, design: .rounded))
-                        .foregroundStyle(accent.opacity(0.88))
+                        .font(AppTypography.chipSmall)
+                        .foregroundStyle(AppTheme.softText)
                         .lineLimit(1)
-                } else {
-                    Text("—")
-                        .font(.system(size: 10, weight: .semibold, design: .rounded))
-                        .foregroundStyle(AppTheme.softText.opacity(0.5))
                 }
             }
             .frame(width: 72)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
@@ -215,7 +203,7 @@ struct TonightActivityStrip: View {
                 let trimmedName = group.name.trimmingCharacters(in: .whitespacesAndNewlines)
                 // Primary label: user's name if they gave one, otherwise "Group"
                 Text(trimmedName.isEmpty ? "Group" : trimmedName)
-                    .font(.system(.caption, design: .rounded, weight: .semibold))
+                    .font(AppTypography.metadataEmphasis)
                     .foregroundStyle(postCount > 0 ? .white : AppTheme.softText)
                     .lineLimit(1)
                     .frame(maxWidth: 68)
@@ -225,24 +213,22 @@ struct TonightActivityStrip: View {
                 // otherwise show the time-ago / dash like friend tiles do.
                 if !trimmedName.isEmpty {
                     Text("Group")
-                        .font(.system(size: 10, weight: .semibold, design: .rounded))
-                        .foregroundStyle(accent.opacity(0.88))
-                } else {
-                    Text(postCount > 0 && group.createdAt > Date.distantPast
-                         ? TonightActivityStrip.compactTimeAgo(from: group.createdAt)
-                         : "—")
-                        .font(.system(size: 10, weight: .semibold, design: .rounded))
-                        .foregroundStyle(postCount > 0 ? accent.opacity(0.88) : AppTheme.softText.opacity(0.5))
+                        .font(AppTypography.chipSmall)
+                        .foregroundStyle(AppTheme.softText)
+                } else if postCount > 0 && group.createdAt > Date.distantPast {
+                    Text(TonightActivityStrip.compactTimeAgo(from: group.createdAt))
+                        .font(AppTypography.chipSmall)
+                        .foregroundStyle(AppTheme.softText)
                 }
             }
             .frame(width: 72)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
 
     private func groupAvatarStack(avatars: [AvatarStyle]) -> some View {
         let size: CGFloat = 52
-        let overlap: CGFloat = 16
 
         return ZStack {
             ForEach(Array(avatars.enumerated()), id: \.offset) { index, avatar in
@@ -274,10 +260,10 @@ struct TonightActivityStrip: View {
     private func groupCountPill(postCount: Int) -> some View {
         HStack(spacing: 3) {
             Text("\(postCount)")
-                .font(.system(size: 12, weight: .bold, design: .rounded))
+                .font(AppTypography.badgeNumber)
                 .foregroundStyle(.black)
             Text(postCount == 1 ? "post" : "posts")
-                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .font(AppTypography.chipSmall)
                 .foregroundStyle(.black.opacity(0.72))
         }
         .padding(.horizontal, 8)
@@ -297,24 +283,24 @@ struct TonightActivityStrip: View {
                         .strokeBorder(
                             style: StrokeStyle(lineWidth: 1.5, dash: [4, 3])
                         )
-                        .foregroundStyle(accent.opacity(0.55))
+                        .foregroundStyle(.white.opacity(0.55))
                         .frame(width: 66, height: 66)
 
                     Image(systemName: "person.badge.plus")
                         .font(.system(size: 22, weight: .semibold))
-                        .foregroundStyle(accent.opacity(0.85))
+                        .foregroundStyle(.white)
                 }
                 .padding(.bottom, 0)
 
                 Text("Create\nGroup")
-                    .font(.system(.caption, design: .rounded, weight: .semibold))
-                    .foregroundStyle(accent.opacity(0.85))
+                    .font(AppTypography.metadataEmphasis)
+                    .foregroundStyle(.white)
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
                     .frame(maxWidth: 68)
-                    .foregroundStyle(accent.opacity(0.65))
             }
             .frame(width: 72)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
@@ -330,10 +316,10 @@ struct TonightActivityStrip: View {
     private func countPill(for entry: AppStore.TonightEntry) -> some View {
         HStack(spacing: 3) {
             Text("\(entry.postsTonightCount)")
-                .font(.system(size: 12, weight: .bold, design: .rounded))
+                .font(AppTypography.badgeNumber)
                 .foregroundStyle(.black)
             Text(entry.postsTonightCount == 1 ? "post" : "posts")
-                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .font(AppTypography.chipSmall)
                 .foregroundStyle(.black.opacity(0.72))
         }
         .padding(.horizontal, 8)

@@ -6,6 +6,7 @@ struct SupabaseEnvironment {
     var storageBucket: String
     var avatarBucket: String
     var inviteBaseURL: String
+    var passkeyRelyingPartyID: String = "outagain.app"
 
     static let embedded = SupabaseEnvironment(
         projectURL: "https://xissvzlusznqpxvwnwpu.supabase.co",
@@ -45,6 +46,9 @@ struct SupabaseEnvironment {
             forKeys: ["OUTAGAIN_INVITE_BASE_URL", "OutAgainInviteBaseURL"],
             in: bundle
         ) ?? environment.inviteBaseURL
+        environment.passkeyRelyingPartyID = value(
+            forKeys: ["OUTAGAIN_PASSKEY_RP_ID"], in: bundle
+        ) ?? environment.passkeyRelyingPartyID
         return environment
     }
 

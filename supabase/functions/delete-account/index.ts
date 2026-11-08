@@ -8,8 +8,9 @@ const corsHeaders = {
 
 const jsonHeaders = { ...corsHeaders, "Content-Type": "application/json" }
 
-type ProfileRow = { avatar_path: string | null }
 type StoragePathRow = { image_path: string | null }
+type BanProfileRow = { is_banned: boolean | null }
+type BannedUserRow = { user_id: string; email_hash: string | null }
 
 Deno.serve(async (request) => {
   if (request.method === "OPTIONS") {
@@ -46,7 +47,15 @@ Deno.serve(async (request) => {
     return json({ error: userError?.message ?? "Invalid JWT" }, 401)
   }
 
-  const avatarPath = await fetchAvatarPath(admin, user.id)
+  const banStatus = await fetchBanStatus(admin, user.id, user.email ?? null)
+  if (banStatus.error) {
+    return json({ error: banStatus.error }, 500)
+  }
+  if (banStatus.isBanned) {
+    return json({ error: "Banned accounts cannot self-delete." }, 403)
+  }
+
+  const avatarPaths = await listAvatarPaths(admin, user.id)
   const postImagePaths = await fetchImagePaths(admin, "posts", "author_id", user.id)
   const commentImagePaths = await fetchImagePaths(admin, "comments", "author_id", user.id)
   const momentPaths = uniqueNonEmpty([...postImagePaths, ...commentImagePaths])
@@ -58,8 +67,8 @@ Deno.serve(async (request) => {
 
   const cleanupWarnings: string[] = []
 
-  if (avatarPath) {
-    const { error } = await admin.storage.from("avatars").remove([avatarPath])
+  if (avatarPaths.length > 0) {
+    const { error } = await admin.storage.from("avatars").remove(avatarPaths)
     if (error) {
       cleanupWarnings.push(`avatars: ${error.message}`)
     }
@@ -81,22 +90,96 @@ Deno.serve(async (request) => {
   )
 })
 
-async function fetchAvatarPath(
+async function fetchBanStatus(
   admin: ReturnType<typeof createClient>,
   userId: string,
-): Promise<string | null> {
-  const { data, error } = await admin
+  email: string | null,
+): Promise<{ isBanned: boolean; error?: string }> {
+  const { data: profileData, error: profileError } = await admin
     .from("profiles")
-    .select("avatar_path")
+    .select("is_banned")
     .eq("id", userId)
     .limit(1)
 
-  if (error) {
-    console.error("delete-account: avatar lookup failed", error.message)
-    return null
+  if (profileError) {
+    console.error("delete-account: profile ban lookup failed", profileError.message)
+    return { isBanned: false, error: "Could not verify account moderation status." }
   }
 
-  return (((data ?? []) as ProfileRow[])[0]?.avatar_path) ?? null
+  if (((profileData ?? []) as BanProfileRow[])[0]?.is_banned === true) {
+    return { isBanned: true }
+  }
+
+  const { data: bannedUserData, error: bannedUserError } = await admin
+    .from("banned_users")
+    .select("user_id,email_hash")
+    .eq("user_id", userId)
+    .limit(1)
+
+  if (bannedUserError) {
+    console.error("delete-account: banned user lookup failed", bannedUserError.message)
+    return { isBanned: false, error: "Could not verify account moderation status." }
+  }
+
+  if (((bannedUserData ?? []) as BannedUserRow[]).length > 0) {
+    return { isBanned: true }
+  }
+
+  const emailHash = await normalizedEmailHash(email)
+  if (!emailHash) {
+    return { isBanned: false }
+  }
+
+  const { data: bannedEmailData, error: bannedEmailError } = await admin
+    .from("banned_users")
+    .select("user_id,email_hash")
+    .eq("email_hash", emailHash)
+    .limit(1)
+
+  if (bannedEmailError) {
+    console.error("delete-account: banned email lookup failed", bannedEmailError.message)
+    return { isBanned: false, error: "Could not verify account moderation status." }
+  }
+
+  return { isBanned: ((bannedEmailData ?? []) as BannedUserRow[]).length > 0 }
+}
+
+async function listAvatarPaths(
+  admin: ReturnType<typeof createClient>,
+  userId: string,
+): Promise<string[]> {
+  const prefix = `users/${userId}`
+  const paths: string[] = []
+  let offset = 0
+  const pageSize = 100
+
+  while (true) {
+    const { data, error } = await admin.storage
+      .from("avatars")
+      .list(prefix, { limit: pageSize, offset })
+
+    if (error) {
+      console.error("delete-account: avatar list failed", error.message)
+      break
+    }
+
+    const batch = data ?? []
+    for (const entry of batch) {
+      if (entry?.name) {
+        paths.push(`${prefix}/${entry.name}`)
+      }
+    }
+
+    if (batch.length < pageSize) {
+      break
+    }
+    offset += pageSize
+    if (offset >= 2000) {
+      break
+    }
+  }
+
+  return paths
 }
 
 async function fetchImagePaths(
@@ -127,6 +210,19 @@ function uniqueNonEmpty(values: Array<string | null | undefined>): string[] {
         .filter((value) => value.length > 0),
     ),
   )
+}
+
+async function normalizedEmailHash(email: string | null): Promise<string | null> {
+  const normalized = email?.trim().toLowerCase() ?? ""
+  if (!normalized) {
+    return null
+  }
+
+  const data = new TextEncoder().encode(normalized)
+  const digest = await crypto.subtle.digest("SHA-256", data)
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("")
 }
 
 function required(name: string): string {

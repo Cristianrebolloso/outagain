@@ -8,6 +8,8 @@
 
 /* Begin PBXBuildFile section */
 		A10000042F99EB130050FCBF /* OutAgainWidgetExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = A10000012F99EB130050FCBF /* OutAgainWidgetExtension.appex */; };
+		AD1000000000000000000001 /* GoogleMobileAds in Frameworks */ = {isa = PBXBuildFile; productRef = AD1000000000000000000002 /* GoogleMobileAds */; };
+		AD1000000000000000000003 /* GoogleUserMessagingPlatform in Frameworks */ = {isa = PBXBuildFile; productRef = AD1000000000000000000004 /* GoogleUserMessagingPlatform */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -62,6 +64,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AD1000000000000000000001 /* GoogleMobileAds in Frameworks */,
+				AD1000000000000000000003 /* GoogleUserMessagingPlatform in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -117,6 +121,8 @@
 			);
 			name = OutAgain;
 			packageProductDependencies = (
+				AD1000000000000000000002 /* GoogleMobileAds */,
+				AD1000000000000000000004 /* GoogleUserMessagingPlatform */,
 			);
 			productName = OutAgain;
 			productReference = 402FA3F82F99EB130050FCBF /* OutAgain.app */;
@@ -172,6 +178,10 @@
 			);
 			mainGroup = 402FA3EF2F99EB130050FCBF;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				AD1000000000000000000005 /* XCRemoteSwiftPackageReference "swift-package-manager-google-mobile-ads" */,
+				AD1000000000000000000006 /* XCRemoteSwiftPackageReference "swift-package-manager-google-user-messaging-platform" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 402FA3F92F99EB130050FCBF /* Products */;
 			projectDirPath = "";
@@ -349,6 +359,7 @@
 		402FA4042F99EB140050FCBF /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ADMOB_APP_ID = "ca-app-pub-3940256099942544~1458002511";
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = OutAgain/OutAgain.Debug.entitlements;
@@ -357,14 +368,14 @@
 				DEVELOPMENT_TEAM = 4JLZS37N8V;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = OutAgainInfo.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Out Again";
 				INFOPLIST_KEY_CFBundleURLTypes_0_CFBundleTypeRole = Editor;
 				INFOPLIST_KEY_CFBundleURLTypes_0_CFBundleURLName = com.cristian.OutAgain;
 				INFOPLIST_KEY_CFBundleURLTypes_0_CFBundleURLSchemes_0 = outagain;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Out Again opens the camera first so you can capture the moment in seconds.";
-				INFOPLIST_KEY_NSContactsUsageDescription = "Out Again matches contacts so you can find real friends fast and keep the network high-signal.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Out Again uses location to tag your moments.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Out Again uses your location to find nearby Local photos and add location to photos you choose to share.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Out Again lets you save photos from posts directly to your camera roll.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Out Again lets you choose a profile photo and review captured moments.";
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
@@ -384,7 +395,13 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 2.2;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-ObjC",
+				);
+				OUTAGAIN_ADS_MODE = test;
+				OUTAGAIN_NATIVE_AD_UNIT_ID = "";
 				PRODUCT_BUNDLE_IDENTIFIER = com.cristian.OutAgain;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -400,6 +417,7 @@
 		402FA4052F99EB140050FCBF /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ADMOB_APP_ID = "ca-app-pub-9977220370780276~1002055970";
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = OutAgain/OutAgain.entitlements;
@@ -408,14 +426,14 @@
 				DEVELOPMENT_TEAM = 4JLZS37N8V;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = OutAgainInfo.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Out Again";
 				INFOPLIST_KEY_CFBundleURLTypes_0_CFBundleTypeRole = Editor;
 				INFOPLIST_KEY_CFBundleURLTypes_0_CFBundleURLName = com.cristian.OutAgain;
 				INFOPLIST_KEY_CFBundleURLTypes_0_CFBundleURLSchemes_0 = outagain;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Out Again opens the camera first so you can capture the moment in seconds.";
-				INFOPLIST_KEY_NSContactsUsageDescription = "Out Again matches contacts so you can find real friends fast and keep the network high-signal.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Out Again uses location to tag your moments.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Out Again uses your location to find nearby Local photos and add location to photos you choose to share.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Out Again lets you save photos from posts directly to your camera roll.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Out Again lets you choose a profile photo and review captured moments.";
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
@@ -435,7 +453,13 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 2.2;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-ObjC",
+				);
+				OUTAGAIN_ADS_MODE = disabled;
+				OUTAGAIN_NATIVE_AD_UNIT_ID = "ca-app-pub-9977220370780276/3867892464";
 				PRODUCT_BUNDLE_IDENTIFIER = com.cristian.OutAgain;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -459,7 +483,7 @@
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = OutAgainWidgetExtensionInfo.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 2.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.cristian.OutAgain.OutAgainWidgetExtension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -481,7 +505,7 @@
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = OutAgainWidgetExtensionInfo.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 2.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.cristian.OutAgain.OutAgainWidgetExtension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -523,6 +547,38 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		AD1000000000000000000005 /* XCRemoteSwiftPackageReference "swift-package-manager-google-mobile-ads" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/googleads/swift-package-manager-google-mobile-ads.git";
+			requirement = {
+				kind = exactVersion;
+				version = 13.12.0;
+			};
+		};
+		AD1000000000000000000006 /* XCRemoteSwiftPackageReference "swift-package-manager-google-user-messaging-platform" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/googleads/swift-package-manager-google-user-messaging-platform.git";
+			requirement = {
+				kind = exactVersion;
+				version = 3.1.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		AD1000000000000000000002 /* GoogleMobileAds */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AD1000000000000000000005 /* XCRemoteSwiftPackageReference "swift-package-manager-google-mobile-ads" */;
+			productName = GoogleMobileAds;
+		};
+		AD1000000000000000000004 /* GoogleUserMessagingPlatform */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AD1000000000000000000006 /* XCRemoteSwiftPackageReference "swift-package-manager-google-user-messaging-platform" */;
+			productName = GoogleUserMessagingPlatform;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 402FA3F02F99EB130050FCBF /* Project object */;
 }

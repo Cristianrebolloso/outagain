@@ -1,3 +1,4 @@
+import Combine
 import PhotosUI
 import SwiftUI
 import UIKit
@@ -6,15 +7,19 @@ import UniformTypeIdentifiers
 struct CommentThreadSheet: View {
     @Environment(AppStore.self) private var store
     @Environment(\.appAccent) private var accent
+    @Environment(\.dismiss) private var dismiss
 
     let postID: UUID
     var highlightedCommentID: UUID? = nil
+    var initialPost: MomentPost? = nil
+    var isEmbedded = false
+    var externalFocusRequestID = 0
+    var onInteractionChanged: (Bool) -> Void = { _ in }
+    var onDraftChanged: (Bool) -> Void = { _ in }
+    var onSubmitted: () -> Void = {}
 
-    @State private var draftText = ""
     @State private var selectedPhotoItem: PhotosPickerItem?
-    @State private var selectedPhotoData: Data?
-    @State private var selectedPhotoIsGIF = false
-    @State private var replyTarget: Comment?
+    @State private var composerFocusRequestID = 0
     @State private var isCameraPresented = false
     @State private var isPhotoLibraryPresented = false
     @State private var isPhotoSourceOptionsPresented = false
@@ -23,24 +28,67 @@ struct CommentThreadSheet: View {
     @State private var isConfirmingDeleteComment = false
     @State private var isConfirmingReportComment = false
     @State private var reportMessage: String?
+    @State private var mentionSuggestions: [UserProfile] = []
+    @State private var mentionSearchTask: Task<Void, Never>?
+    @State private var isComposerFocused = false
+    @State private var isLoadingPhoto = false
+
+    private var composerDraft: CommentComposerDraft { store.commentComposerDraft(for: postID) }
+    private var draftText: String {
+        get { composerDraft.text }
+        nonmutating set { composerDraft.text = newValue }
+    }
+    private var selectedPhotoData: Data? {
+        get { composerDraft.photoData }
+        nonmutating set { composerDraft.photoData = newValue }
+    }
+    private var selectedPhotoIsGIF: Bool {
+        get { composerDraft.photoIsGIF }
+        nonmutating set { composerDraft.photoIsGIF = newValue }
+    }
+    private var replyTarget: Comment? {
+        get { composerDraft.replyTarget }
+        nonmutating set { composerDraft.replyTarget = newValue }
+    }
+    private var isComposerEngaged: Bool {
+        isComposerFocused || isLoadingPhoto || isCameraPresented || isPhotoLibraryPresented
+    }
+    private func draftBinding<Value>(_ keyPath: ReferenceWritableKeyPath<CommentComposerDraft, Value>) -> Binding<Value> {
+        Binding(get: { composerDraft[keyPath: keyPath] }, set: { composerDraft[keyPath: keyPath] = $0 })
+    }
 
     private var currentPost: MomentPost? {
-        store.posts.first(where: { $0.id == postID })
+        hydratedCurrentPost(
+            livePost: store.livePost(matching: postID),
+            fallbackPost: initialPost
+        )
     }
 
     private var comments: [Comment] {
-        (currentPost?.comments ?? []).sorted { $0.createdAt < $1.createdAt }
+        (currentPost?.comments ?? []).sorted { lhs, rhs in
+            if lhs.createdAt == rhs.createdAt {
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
+            return lhs.createdAt < rhs.createdAt
+        }
+    }
+
+    private var highlightedCommentIsLoaded: Bool {
+        guard let highlightedCommentID else { return false }
+        return comments.contains(where: { $0.id == highlightedCommentID })
     }
 
     private var commentNodes: [ThreadCommentNode] {
         let grouped = Dictionary(grouping: comments, by: \.replyToCommentID)
-        // Top-level comment IDs so we can identify which replies go
-        // directly under a root comment vs. are nested deeper.
-        let rootIDs = Set((grouped[nil] ?? []).map(\.id))
 
         func buildNodes(parentID: UUID?) -> [ThreadCommentNode] {
             (grouped[parentID] ?? [])
-                .sorted { $0.createdAt < $1.createdAt }
+                .sorted { lhs, rhs in
+                    if lhs.createdAt == rhs.createdAt {
+                        return lhs.id.uuidString < rhs.id.uuidString
+                    }
+                    return lhs.createdAt < rhs.createdAt
+                }
                 .map { comment in
                     // Only recurse one level deep. Any reply whose parent
                     // is itself already a reply (not a root comment) gets
@@ -93,7 +141,12 @@ struct CommentThreadSheet: View {
 
         // Re-sort each root's replies by date after flattening.
         for i in roots.indices {
-            roots[i].replies.sort { $0.comment.createdAt < $1.comment.createdAt }
+            roots[i].replies.sort { lhs, rhs in
+                if lhs.comment.createdAt == rhs.comment.createdAt {
+                    return lhs.id.uuidString < rhs.id.uuidString
+                }
+                return lhs.comment.createdAt < rhs.comment.createdAt
+            }
         }
 
         return roots
@@ -107,308 +160,397 @@ struct CommentThreadSheet: View {
         !trimmedDraftText.isEmpty || selectedPhotoData != nil
     }
 
+    private var activeMentionQuery: String? {
+        Self.activeMentionQuery(in: draftText)
+    }
+
+    private var shouldShowMentionSuggestions: Bool {
+        activeMentionQuery != nil && !mentionSuggestions.isEmpty
+    }
+
+    private var mentionCandidatePool: [UserProfile] {
+        var pool: [UserProfile] = []
+        var seen = Set<UUID>()
+
+        func append(_ profile: UserProfile?) {
+            guard let profile,
+                  profile.id != store.viewer?.id,
+                  !store.blockedUserIDs.contains(profile.id),
+                  seen.insert(profile.id).inserted
+            else { return }
+            pool.append(profile)
+        }
+
+        append(replyTarget?.author)
+        append(currentPost?.author)
+        currentPost?.taggedFriends.forEach { append($0) }
+        comments.forEach { append($0.author) }
+        store.friends.forEach { append($0) }
+
+        return pool
+    }
+
+    @ViewBuilder
     var body: some View {
-        // NavigationStack lets us push FriendProfileView onto the stack
-        // when a commenter's avatar/name is tapped, avoiding the multiple-
-        // sheet conflict that occurs when trying to layer a .sheet on top
-        // of an already-presented sheet from the same view hierarchy.
-        NavigationStack {
-            ZStack {
-                AmbientBackground()
-
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 20) {
-                            titleSection
-                            threadSection
-                            composerSection
-                        }
-                        .padding(20)
-                        .padding(.bottom, 12)
-                    }
-                    .scrollIndicators(.hidden)
-                    .task(id: highlightedCommentID) {
-                        guard let highlightedCommentID else { return }
-                        try? await Task.sleep(for: .milliseconds(200))
-                        withAnimation(.easeInOut(duration: 0.28)) {
-                            proxy.scrollTo(highlightedCommentID, anchor: .center)
-                        }
-                    }
-                }
-            }
-            .navigationDestination(item: $selectedCommentAuthor) { author in
-                FriendProfileView(profile: author, presentationStyle: .embedded)
-            }
-            .navigationBarHidden(true)
-        }
-        .onChange(of: selectedPhotoItem) { _, newValue in
-            guard let newValue else { return }
-
-            Task {
-                let expectsGIF = newValue.supportedContentTypes.contains(UTType.gif)
-                if let data = try? await newValue.loadTransferable(type: Data.self) {
-                    selectedPhotoData = data
-                    selectedPhotoIsGIF = expectsGIF || dataLooksLikeGIF(data)
-                }
-            }
-        }
-        .photosPicker(
-            isPresented: $isPhotoLibraryPresented,
-            selection: $selectedPhotoItem,
-            matching: .images,
-            preferredItemEncoding: .current
-        )
-        .sheet(isPresented: $isCameraPresented) {
-            SystemImagePicker(sourceType: .camera, imageData: $selectedPhotoData)
-        }
-        .confirmationDialog("Add a photo", isPresented: $isPhotoSourceOptionsPresented, titleVisibility: .visible) {
-            Button("Take Photo") {
-                isCameraPresented = true
-            }
-
-            Button("Choose from Library") {
-                isPhotoLibraryPresented = true
-            }
-
-            if selectedPhotoData != nil {
-                Button("Remove Photo", role: .destructive) {
-                    selectedPhotoItem = nil
-                    selectedPhotoData = nil
-                }
-            }
-        }
-        .confirmationDialog(
-            "Delete this comment?",
-            isPresented: $isConfirmingDeleteComment,
-            titleVisibility: .visible
-        ) {
-            Button("Delete comment", role: .destructive) {
-                guard let pendingCommentAction else { return }
-                store.deleteComment(commentID: pendingCommentAction.id, inPostID: postID)
-                self.pendingCommentAction = nil
-            }
-            Button("Cancel", role: .cancel) {
-                pendingCommentAction = nil
-            }
-        } message: {
-            if let pendingCommentAction, canDeleteComment(pendingCommentAction) {
-                Text(deleteCommentMessage(for: pendingCommentAction))
+        if store.isDuoDevice {
+            if isEmbedded {
+                duoThread
+                    .containerBackground(.clear, for: .navigation)
             } else {
-                Text("This removes the comment from the thread.")
+                NavigationStack {
+                    duoThread
+                        .containerBackground(.clear, for: .navigation)
+                        .navigationTitle("Comments")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbarBackground(.hidden, for: .navigationBar)
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button("Close comments", systemImage: "xmark") { dismiss() }
+                            }
+                        }
+                }
+                .modifier(DuoSheetSurface())
             }
-        }
-        .confirmationDialog(
-            "Report this comment?",
-            isPresented: $isConfirmingReportComment,
-            titleVisibility: .visible
-        ) {
-            Button("Report comment", role: .destructive) {
-                submitCommentReport()
-            }
-            Button("Cancel", role: .cancel) {
-                pendingCommentAction = nil
-            }
-        } message: {
-            Text("We'll flag it for review.")
-        }
-        .alert("Report status", isPresented: reportAlertBinding) {
-            Button("OK", role: .cancel) {
-                reportMessage = nil
-                pendingCommentAction = nil
-            }
-        } message: {
-            Text(reportMessage ?? "We'll take a look.")
-        }
-        .task(id: postID) {
-            await store.ensureFullCommentsLoaded(for: postID)
+        } else {
+            PhoneCommentThreadSheet(
+                postID: postID,
+                highlightedCommentID: highlightedCommentID,
+                initialPost: initialPost
+            )
         }
     }
 
-    private var titleSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Comments")
-                .font(.system(size: 32, weight: .bold, design: .serif))
-                .foregroundStyle(.white)
+    private var duoThread: some View {
+        ZStack {
+            VStack(spacing: 0) {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 20) {
+                            threadSection
+                        }
+                        .padding(.horizontal, AppLayout.screenPadding)
+                        .padding(.top, isEmbedded ? AppLayout.secondaryPageTopPadding : 32)
+                        .padding(.bottom, 32)
+                    }
+                    .scrollIndicators(.hidden)
+                    .scrollDismissesKeyboard(.interactively)
+                    .onTapGesture {
+                        UIApplication.shared.sendAction(
+                            #selector(UIResponder.resignFirstResponder),
+                            to: nil, from: nil, for: nil
+                        )
+                    }
+                    .task(id: highlightedCommentID) {
+                        await scrollToHighlightedCommentIfReady(proxy)
+                    }
+                    .onChange(of: highlightedCommentIsLoaded) { _, isLoaded in
+                        guard isLoaded else { return }
+                        Task {
+                            await scrollToHighlightedCommentIfReady(proxy)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Keep scrolled photos inside the thread's viewport, above
+                // the composer even when its height or the keyboard changes.
+                .clipped()
+                .sheet(item: $selectedCommentAuthor) { author in
+                    FriendProfileView(profile: author, presentationStyle: .sheet)
+                        .presentationDetents([.large])
+                        .appSheetDragHandle()
+                }
+                ComposerBarView(
+                    draftText: draftBinding(\.text),
+                    replyTarget: draftBinding(\.replyTarget),
+                    selectedPhotoItem: $selectedPhotoItem,
+                    selectedPhotoData: draftBinding(\.photoData),
+                    selectedPhotoIsGIF: draftBinding(\.photoIsGIF),
+                    mentionSuggestions: $mentionSuggestions,
+                    isCameraPresented: $isCameraPresented,
+                    isPhotoLibraryPresented: $isPhotoLibraryPresented,
+                    focusRequestID: composerFocusRequestID,
+                    accent: accent,
+                    placeholder: replyTarget == nil ? "Add a comment..." : "Write a reply...",
+                    shouldShowMentionSuggestions: shouldShowMentionSuggestions,
+                    canSend: canSend,
+                    onMentionPick: { applyMentionSuggestion($0) },
+                    onSubmit: { submitComment() },
+                    onTextChange: { updateMentionSuggestions() },
+                    onFocusChanged: { isComposerFocused = $0 },
+                    showsBackground: false
+                )
+            }
+            .onChange(of: isComposerEngaged, initial: true) { _, engaged in
+                if store.feedDiscussion.selectedPostID == postID { store.feedDiscussion.isInteracting = engaged }
+                onInteractionChanged(engaged)
+            }
+            .onChange(of: composerDraft.hasContent, initial: true) { _, hasDraft in
+                store.feedDiscussion.setDraftPresent(hasDraft, for: postID)
+                onDraftChanged(hasDraft)
+            }
+            .onChange(of: externalFocusRequestID) { _, value in
+                if value > 0 { composerFocusRequestID += 1 }
+            }
+            .onChange(of: selectedPhotoItem) { _, newValue in
+                guard let newValue else { return }
+                let destinationDraft = composerDraft
+                isLoadingPhoto = true
+                Task {
+                    defer { isLoadingPhoto = false }
+                    let expectsGIF = newValue.supportedContentTypes.contains(UTType.gif)
+                    if let data = try? await newValue.loadTransferable(type: Data.self) {
+                        destinationDraft.photoData = data
+                        destinationDraft.photoIsGIF = expectsGIF || dataLooksLikeGIF(data)
+                    }
+                }
+            }
+            .photosPicker(
+                isPresented: $isPhotoLibraryPresented,
+                selection: $selectedPhotoItem,
+                matching: .images,
+                preferredItemEncoding: .current
+            )
+            .fullScreenCover(isPresented: $isCameraPresented) {
+                SystemImagePicker(sourceType: .camera, imageData: draftBinding(\.photoData))
+                    .ignoresSafeArea()
+            }
+            .alert(
+                "Delete this comment?",
+                isPresented: $isConfirmingDeleteComment,
+                actions: {
+                Button("Delete comment", role: .destructive) {
+                    guard let pendingCommentAction else { return }
+                    store.deleteComment(commentID: pendingCommentAction.id, inPostID: postID)
+                    self.pendingCommentAction = nil
+                }
+                Button("Cancel", role: .cancel) {
+                    pendingCommentAction = nil
+                }
+                .tint(.blue)
+            }, message: {
+                if let pendingCommentAction, canDeleteComment(pendingCommentAction) {
+                    Text(deleteCommentMessage(for: pendingCommentAction))
+                } else {
+                    Text("This removes the comment from the thread.")
+                }
+            })
+            .alert(
+                "Report this comment?",
+                isPresented: $isConfirmingReportComment,
+                actions: {
+                Button("Report comment", role: .destructive) {
+                    submitCommentReport()
+                }
+                Button("Cancel", role: .cancel) {
+                    pendingCommentAction = nil
+                }
+                .tint(.blue)
+            }, message: {
+                Text("We'll flag it for review.")
+            })
+            .alert("Report status", isPresented: reportAlertBinding) {
+                Button("OK", role: .cancel) {
+                    reportMessage = nil
+                    pendingCommentAction = nil
+                }
+            } message: {
+                Text(reportMessage ?? "We'll take a look.")
+            }
+            .onAppear {
+                seedInitialPostIfNeeded()
+                if externalFocusRequestID > 0 { composerFocusRequestID += 1 }
+            }
+            .task(id: postID) {
+                seedInitialPostIfNeeded()
+                await store.ensureFullCommentsLoaded(
+                    for: postID,
+                    requiring: highlightedCommentID,
+                    fallbackPost: initialPost
+                )
+            }
+            .onDisappear {
+                mentionSearchTask?.cancel()
+                if store.feedDiscussion.selectedPostID == postID { store.feedDiscussion.isInteracting = false }
+                onInteractionChanged(false)
+            }
+        }
+    }
+
+    private func hydratedCurrentPost(
+        livePost: MomentPost?,
+        fallbackPost: MomentPost?
+    ) -> MomentPost? {
+        guard var livePost else { return fallbackPost }
+        guard let fallbackPost, fallbackPost.id == livePost.id else { return livePost }
+
+        let liveCommentIDs = Set(livePost.comments.map(\.id))
+        let missingFallbackComments = fallbackPost.comments.filter { !liveCommentIDs.contains($0.id) }
+        if !missingFallbackComments.isEmpty {
+            livePost.comments = missingFallbackComments + livePost.comments
+        }
+        livePost.commentCount = max(
+            livePost.commentCount,
+            fallbackPost.commentCount,
+            livePost.comments.count
+        )
+        livePost.hasLoadedFullCommentThread = livePost.hasLoadedFullCommentThread
+            || fallbackPost.hasLoadedFullCommentThread
+        return livePost
+    }
+
+    private func seedInitialPostIfNeeded() {
+        guard let initialPost, initialPost.id == postID else { return }
+
+        guard let existing = store.livePost(matching: postID) else {
+            store.cacheProfilePosts([initialPost])
+            return
+        }
+
+        let initialHasNewerPreview = initialPost.comments.count > existing.comments.count
+        let initialHasNewerCount = initialPost.commentCount > existing.commentCount
+        guard initialHasNewerPreview || initialHasNewerCount else { return }
+
+        store.cacheProfilePosts([initialPost])
+    }
+
+    private func scrollToHighlightedCommentIfReady(_ proxy: ScrollViewProxy) async {
+        guard let highlightedCommentID,
+              highlightedCommentIsLoaded
+        else { return }
+
+        try? await Task.sleep(for: .milliseconds(200))
+        withAnimation(.easeInOut(duration: 0.28)) {
+            proxy.scrollTo(highlightedCommentID, anchor: .center)
         }
     }
 
     @ViewBuilder
     private var threadSection: some View {
-        if !commentNodes.isEmpty {
-            NightPanel(cornerRadius: 30, padding: 16) {
-                VStack(alignment: .leading, spacing: 18) {
-                    ForEach(Array(commentNodes.enumerated()), id: \.element.id) { index, node in
-                        CommentThreadNodeView(
-                            node: node,
-                            postID: postID,
-                            highlightedCommentID: highlightedCommentID,
-                            onReply: { comment in
-                                withAnimation(.snappy(duration: 0.2)) {
-                                    replyTarget = comment
-                                }
-                            },
-                            onAuthorTap: { author in
-                                selectedCommentAuthor = author
-                            },
-                            onMore: { action in
-                                handleCommentOverflowAction(action)
-                            }
-                        )
+        let hasCaption = !(currentPost?.caption.isEmpty ?? true)
+        let hasComments = !commentNodes.isEmpty
+        let isLoading = !hasComments && (currentPost?.commentCount ?? 0) > 0
 
-                        if index < commentNodes.count - 1 {
+        // No caption, no loaded comments, no incoming load — render an
+        // inviting empty state in place of the panel rather than an empty
+        // rounded rectangle. Floats centered in the AmbientBackground for
+        // a lighter, more welcoming feel.
+        if !hasCaption && !hasComments && !isLoading {
+            commentsEmptyState
+        } else {
+            // Everything lives in one NightPanel: optional caption header,
+            // comment rows or loading indicator.
+            NightPanel(cornerRadius: AppLayout.panelRadius, padding: 14) {
+                VStack(alignment: .leading, spacing: 0) {
+
+                    // ── Caption header — only when the post has a caption ────
+                    if let post = currentPost, hasCaption {
+                        HStack(spacing: 10) {
+                            AvatarView(avatar: post.author.avatar, size: 34)
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                VerifiedProfileLabel(profile: post.author, spacing: 4, badgeSize: 11) {
+                                    Text(post.author.displayName)
+                                        .font(AppTypography.rowTitle)
+                                        .foregroundStyle(.white)
+                                }
+                                Text(post.caption)
+                                    .font(AppTypography.callout)
+                                    .foregroundStyle(.white.opacity(0.92))
+                                    .lineLimit(3)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.bottom, 10)
+
+                        // Only render the divider when there's something
+                        // below it — otherwise the caption is followed by
+                        // a hairline floating above empty space.
+                        if hasComments || isLoading {
                             Divider()
                                 .overlay(AppTheme.line)
+                                .padding(.bottom, 10)
                         }
                     }
-                }
-            }
-        } else if (currentPost?.commentCount ?? 0) > 0 {
-            NightPanel(cornerRadius: 30, padding: 20) {
-                HStack(spacing: 12) {
-                    ProgressView()
-                        .tint(accent)
-                    Text("Loading comments…")
-                        .font(.system(.subheadline, design: .rounded, weight: .semibold))
-                        .foregroundStyle(.white)
-                }
-            }
-        }
-    }
 
-    private var composerSection: some View {
-        NightPanel(cornerRadius: 30, padding: 16) {
-            VStack(alignment: .leading, spacing: 16) {
-                if let replyTarget {
-                    replyBanner(replyTarget)
-                }
-
-                if let selectedPhotoData {
-                    selectedPhotoPreview(data: selectedPhotoData, isGIF: selectedPhotoIsGIF)
-                }
-
-                HStack(alignment: .center, spacing: 10) {
-                    Button {
-                        isPhotoSourceOptionsPresented = true
-                    } label: {
-                        Image(systemName: "camera.fill")
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(AppTheme.charcoal)
-                            .frame(width: 36, height: 36)
-                            .background(accent, in: Circle())
+                    // ── Comment rows ─────────────────────────────────────────
+                    if hasComments {
+                        VStack(alignment: .leading, spacing: 10) {
+                            ForEach(commentNodes) { node in
+                                CommentThreadNodeView(
+                                    node: node,
+                                    postID: postID,
+                                    highlightedCommentID: highlightedCommentID,
+                                    onReply: { comment in
+                                        if isComposerFocused {
+                                            // Keyboard already visible — animate the banner
+                                            // swap in place with a quick fade.
+                                            withAnimation(.spring(response: 0.28, dampingFraction: 0.9)) {
+                                                replyTarget = comment
+                                            }
+                                        } else {
+                                            // Keyboard is coming up — place the banner
+                                            // instantly so the whole bar rises as one unit.
+                                            replyTarget = comment
+                                        }
+                                        composerFocusRequestID += 1
+                                    },
+                                    onAuthorTap: { author in
+                                        selectedCommentAuthor = author
+                                    },
+                                    onMore: { action in
+                                        handleCommentOverflowAction(action)
+                                    }
+                                )
+                            }
+                        }
+                    } else if isLoading {
+                        HStack(spacing: 12) {
+                            ProgressView()
+                                .tint(accent)
+                            Text("Loading comments…")
+                                .font(AppTypography.button)
+                                .foregroundStyle(.white)
+                        }
+                    } else if hasCaption {
+                        // Caption present, comments empty: prompt the user
+                        // inside the same panel so the empty space below
+                        // the caption divider has purpose.
+                        Text("Be the first to comment")
+                            .font(AppTypography.button)
+                            .foregroundStyle(.white.opacity(0.6))
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .padding(.vertical, 8)
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Add photo")
 
-                    composerInput
                 }
             }
         }
     }
 
-    private func replyBanner(_ comment: Comment) -> some View {
-        HStack(spacing: 10) {
-            Text("Replying to \(comment.author.displayName)")
-                .font(.system(.footnote, design: .rounded, weight: .semibold))
-                .foregroundStyle(.white)
-
-            Spacer()
-
-            Button {
-                replyTarget = nil
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(AppTheme.softText)
-                    .frame(width: 26, height: 26)
-                    .background(.white.opacity(0.05), in: Circle())
-            }
-            .buttonStyle(.plain)
+    /// Standalone empty state used when there's nothing to render in the
+    /// panel — no caption and no comments. Renders centered against the
+    /// sheet's AmbientBackground without panel chrome, so the surface
+    /// reads as "open invitation" rather than "loaded but empty."
+    private var commentsEmptyState: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "bubble.left.and.bubble.right")
+                .font(.system(size: 32, weight: .light))
+                .foregroundStyle(.white.opacity(0.45))
+            Text("Be the first to comment")
+                .font(AppTypography.rowTitle)
+                .foregroundStyle(.white.opacity(0.85))
         }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 60)
     }
 
-    private var composerInput: some View {
-        HStack(alignment: .bottom, spacing: 10) {
-            ZStack(alignment: .topLeading) {
-                if draftText.isEmpty {
-                    Text(replyTarget == nil ? "Add a comment..." : "Write a reply...")
-                        .font(.system(.body, design: .rounded))
-                        .foregroundStyle(AppTheme.softText)
-                        .padding(.top, 8)
-                }
-
-                TextField("", text: $draftText, axis: .vertical)
-                    .font(.system(.body, design: .rounded))
-                    .foregroundStyle(.white)
-                    .tint(accent)
-                    .textInputAutocapitalization(.sentences)
-                    .lineLimit(1 ... 5)
-                    .padding(.vertical, 8)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            if canSend {
-                Button {
-                    submitComment()
-                } label: {
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(AppTheme.charcoal)
-                        .frame(width: 36, height: 36)
-                        .background(accent, in: Circle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Post comment")
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .strokeBorder(AppTheme.line, lineWidth: 1)
-        )
-    }
-
-    private func selectedPhotoPreview(data: Data, isGIF: Bool) -> some View {
-        ZStack(alignment: .topTrailing) {
-            if isGIF {
-                AnimatedGIFView(data: data)
-                    .frame(maxWidth: .infinity, maxHeight: 180)
-                    .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 24, style: .continuous)
-                            .strokeBorder(AppTheme.line, lineWidth: 1)
-                    )
-            } else if let image = UIImage(data: data) {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxWidth: .infinity, maxHeight: 180)
-                    .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 24, style: .continuous)
-                            .strokeBorder(AppTheme.line, lineWidth: 1)
-                    )
-            }
-
-            Button {
-                selectedPhotoItem = nil
-                selectedPhotoData = nil
-                selectedPhotoIsGIF = false
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 28, height: 28)
-                    .background(.black.opacity(0.45), in: Circle())
-                    .padding(12)
-            }
-            .buttonStyle(.plain)
-        }
-    }
 
     private func submitComment() {
+        guard canSend else { return }
+        // The destination is this view's immutable postID, never the moving
+        // feed selection. Each post owns its draft and attachment state.
+        if store.feedDiscussion.selectedPostID == postID { store.feedDiscussion.didSubmit(to: postID) }
+        onSubmitted()
         if let selectedPhotoData {
             let kind: CommentKind = selectedPhotoIsGIF ? .gif : .photo
             let fallbackText = selectedPhotoIsGIF ? "GIF reply" : "Photo reply"
@@ -427,11 +569,114 @@ struct CommentThreadSheet: View {
     }
 
     private func resetComposer() {
+        mentionSearchTask?.cancel()
         draftText = ""
+        mentionSuggestions = []
         selectedPhotoItem = nil
         selectedPhotoData = nil
         selectedPhotoIsGIF = false
         replyTarget = nil
+    }
+
+    private func updateMentionSuggestions() {
+        mentionSearchTask?.cancel()
+
+        guard let query = activeMentionQuery else {
+            mentionSuggestions = []
+            return
+        }
+
+        let localSuggestions = localMentionSuggestions(matching: query)
+        mentionSuggestions = localSuggestions
+
+        let remoteQuery = UsernameRules.searchFragment(query)
+        guard remoteQuery.count >= 2 else { return }
+        let backend = store.backend
+        let viewer = store.viewer
+
+        mentionSearchTask = Task {
+            try? await Task.sleep(for: .milliseconds(180))
+            guard !Task.isCancelled else { return }
+
+            let remoteSuggestions = (try? await backend.searchUsers(matching: remoteQuery, excluding: viewer)) ?? []
+            let mergedSuggestions = mergeMentionSuggestions(
+                local: localSuggestions,
+                remote: remoteSuggestions,
+                matching: remoteQuery
+            )
+
+            await MainActor.run {
+                guard !Task.isCancelled,
+                      UsernameRules.searchFragment(activeMentionQuery ?? "") == remoteQuery
+                else { return }
+                mentionSuggestions = mergedSuggestions
+            }
+        }
+    }
+
+    private func localMentionSuggestions(matching query: String) -> [UserProfile] {
+        let normalizedQuery = UsernameRules.searchFragment(query)
+        let pool = mentionCandidatePool
+
+        guard !normalizedQuery.isEmpty else {
+            return Array(pool.prefix(5))
+        }
+
+        return rankedMentionSuggestions(in: pool, matching: normalizedQuery)
+    }
+
+    private func mergeMentionSuggestions(
+        local: [UserProfile],
+        remote: [UserProfile],
+        matching query: String
+    ) -> [UserProfile] {
+        var merged: [UserProfile] = []
+        var seen = Set<UUID>()
+
+        func append(_ profile: UserProfile) {
+            guard profile.id != store.viewer?.id,
+                  !store.blockedUserIDs.contains(profile.id),
+                  seen.insert(profile.id).inserted
+            else { return }
+            merged.append(profile)
+        }
+
+        local.forEach(append)
+        rankedMentionSuggestions(in: remote, matching: query).forEach(append)
+        return Array(merged.prefix(5))
+    }
+
+    private func rankedMentionSuggestions(in profiles: [UserProfile], matching query: String) -> [UserProfile] {
+        profiles
+            .compactMap { profile -> (Int, String, UserProfile)? in
+                let username = UsernameRules.normalized(profile.username)
+                let displayName = profile.displayName.lowercased()
+
+                let rank: Int
+                if username == query {
+                    rank = 0
+                } else if username.hasPrefix(query) {
+                    rank = 1
+                } else if displayName.hasPrefix(query) {
+                    rank = 2
+                } else if displayName.contains(query) {
+                    rank = 3
+                } else {
+                    return nil
+                }
+
+                return (rank, profile.displayName.lowercased(), profile)
+            }
+            .sorted { lhs, rhs in
+                if lhs.0 != rhs.0 { return lhs.0 < rhs.0 }
+                return lhs.1 < rhs.1
+            }
+            .map(\.2)
+    }
+
+    private func applyMentionSuggestion(_ profile: UserProfile) {
+        draftText = Self.replacingActiveMention(in: draftText, with: profile.username)
+        mentionSuggestions = []
     }
 
     private func canDeleteComment(_ comment: Comment) -> Bool {
@@ -492,10 +737,364 @@ struct CommentThreadSheet: View {
             }
         )
     }
+
+    private static let activeMentionRegex = try! NSRegularExpression(
+        pattern: #"(?<![A-Za-z0-9_])@([A-Za-z0-9_]*)$"#,
+        options: []
+    )
+
+    private static func activeMentionQuery(in text: String) -> String? {
+        let nsRange = NSRange(text.startIndex..., in: text)
+        guard let match = activeMentionRegex.firstMatch(in: text, options: [], range: nsRange),
+              match.numberOfRanges > 1,
+              let range = Range(match.range(at: 1), in: text)
+        else { return nil }
+
+        return String(text[range])
+    }
+
+    private static func replacingActiveMention(in text: String, with username: String) -> String {
+        let nsRange = NSRange(text.startIndex..., in: text)
+        guard let match = activeMentionRegex.firstMatch(in: text, options: [], range: nsRange),
+              let fullRange = Range(match.range(at: 0), in: text)
+        else { return text }
+
+        return text.replacingCharacters(in: fullRange, with: "@\(UsernameRules.normalized(username)) ")
+    }
 }
 
 private func dataLooksLikeGIF(_ data: Data) -> Bool {
     data.prefix(6).starts(with: [0x47, 0x49, 0x46, 0x38])
+}
+
+// MARK: - Composer bar (pure SwiftUI)
+
+/// The hosting thread reserves this bar's height below its clipped scroll view.
+/// The stack follows the window's keyboard safe area, including resizing.
+struct ComposerBarView: View {
+    @Binding var draftText: String
+    @Binding var replyTarget: Comment?
+    @Binding var selectedPhotoItem: PhotosPickerItem?
+    @Binding var selectedPhotoData: Data?
+    @Binding var selectedPhotoIsGIF: Bool
+    @Binding var mentionSuggestions: [UserProfile]
+    @Binding var isCameraPresented: Bool
+    @Binding var isPhotoLibraryPresented: Bool
+
+    let focusRequestID: Int
+    let accent: Color
+    let placeholder: String
+    let shouldShowMentionSuggestions: Bool
+    let canSend: Bool
+    let onMentionPick: (UserProfile) -> Void
+    let onSubmit: () -> Void
+    let onTextChange: () -> Void
+    let onFocusChanged: (Bool) -> Void
+    var showsBackground = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if shouldShowMentionSuggestions {
+                mentionSuggestionsList
+            }
+
+            if let comment = replyTarget {
+                replyBanner(comment)
+                    .transition(.opacity)
+            }
+
+            if let data = selectedPhotoData {
+                selectedPhotoPreview(data: data, isGIF: selectedPhotoIsGIF)
+            }
+
+            HStack(alignment: .center, spacing: 10) {
+                Menu {
+                    Button {
+                        isCameraPresented = true
+                    } label: {
+                        Label("Take Photo", systemImage: "camera")
+                    }
+                    Button {
+                        isPhotoLibraryPresented = true
+                    } label: {
+                        Label("Choose from Library", systemImage: "photo.on.rectangle")
+                    }
+                    if selectedPhotoData != nil {
+                        Button(role: .destructive) {
+                            selectedPhotoItem = nil
+                            selectedPhotoData = nil
+                        } label: {
+                            Label("Remove Photo", systemImage: "trash")
+                        }
+                    }
+                } label: {
+                    Image(systemName: "camera.fill")
+                        .font(.system(size: 19, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 44, height: 44)
+                        .primaryGlass(in: .circle, interactive: true)
+                }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .accessibilityLabel("Add photo")
+
+                inputPill
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+        .padding(.bottom, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            if showsBackground {
+                Color.black.opacity(0.96)
+                    .ignoresSafeArea(edges: .bottom)
+            }
+        }
+        .overlay(alignment: .top) {
+            if showsBackground {
+                Divider().overlay(Color.white.opacity(0.12))
+            }
+        }
+    }
+
+    private func replyBanner(_ comment: Comment) -> some View {
+        HStack(spacing: 8) {
+            Text("Replying to \(comment.author.displayName)")
+                .font(AppTypography.buttonFootnote)
+                .foregroundStyle(.white)
+
+            Button {
+                replyTarget = nil
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.78))
+                    .frame(width: 22, height: 22)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.leading, 12)
+        .padding(.trailing, 7)
+        .padding(.vertical, 7)
+        .background(.white.opacity(0.22), in: Capsule())
+        .overlay(Capsule().strokeBorder(.white.opacity(0.28), lineWidth: 1))
+    }
+
+    private var inputPill: some View {
+        HStack(alignment: .bottom, spacing: 10) {
+            ZStack(alignment: .topLeading) {
+                if draftText.isEmpty {
+                    Text(placeholder)
+                        .font(AppTypography.body)
+                        .foregroundStyle(AppTheme.softText)
+                        // Match textContainerInset top (8pt) and lineFragmentPadding (4pt)
+                        .padding(.top, 8)
+                        .padding(.leading, 4)
+                        .allowsHitTesting(false)
+                }
+
+                ComposerTextView(
+                    text: $draftText,
+                    accent: UIColor(accent),
+                    focusRequestID: focusRequestID,
+                    onChange: onTextChange,
+                    onFocusChanged: onFocusChanged
+                )
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if canSend {
+                Button(action: onSubmit) {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 36, height: 36)
+                        .primaryGlass(in: .circle, interactive: true)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .contentShape(Circle())
+                .accessibilityLabel("Post comment")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            Color(red: 0.20, green: 0.20, blue: 0.21),
+            in: RoundedRectangle(cornerRadius: 24, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
+        )
+    }
+
+    private var mentionSuggestionsList: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(mentionSuggestions.prefix(5))) { profile in
+                Button {
+                    onMentionPick(profile)
+                } label: {
+                    HStack(spacing: 12) {
+                        AvatarView(avatar: profile.avatar, size: 34)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(profile.displayName)
+                                .font(AppTypography.button)
+                                .foregroundStyle(.white)
+                            VerifiedUsernameLabel(
+                                profile: profile,
+                                font: AppTypography.usernameCompact,
+                                badgeSize: 10
+                            )
+                        }
+                        Spacer()
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(6)
+        .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(AppTheme.line, lineWidth: 1)
+        )
+    }
+
+    private func selectedPhotoPreview(data: Data, isGIF: Bool) -> some View {
+        ZStack(alignment: .topTrailing) {
+            if isGIF {
+                AnimatedGIFView(data: data)
+                    .frame(maxWidth: .infinity, maxHeight: 180)
+                    .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .strokeBorder(AppTheme.line, lineWidth: 1))
+            } else if let image = UIImage(data: data) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: .infinity, maxHeight: 180)
+                    .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .strokeBorder(AppTheme.line, lineWidth: 1))
+            }
+
+            Button {
+                selectedPhotoItem = nil
+                selectedPhotoData = nil
+                selectedPhotoIsGIF = false
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 28, height: 28)
+                    .background(.black.opacity(0.45), in: Circle())
+                    .padding(12)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+}
+
+// MARK: - UIKit-bridged composer text view
+//
+// SwiftUI's `TextField` wraps a private UITextField that we cannot configure
+// as a true UIResponder for the keyboard system's accessory mechanism. The
+// composer's text input is therefore a real UITextView bridged through
+// `UIViewRepresentable`. State binds back to the SwiftUI `@State draftText`
+// so all surrounding logic (mention parsing, submit, reset) keeps working.
+
+/// UITextView subclass that invalidates its intrinsic size on every layout
+/// pass so the SwiftUI ZStack containing it always has an accurate height.
+final class SelfSizingTextView: UITextView {
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        invalidateIntrinsicContentSize()
+    }
+}
+
+struct ComposerTextView: UIViewRepresentable {
+    @Binding var text: String
+    let accent: UIColor
+    let focusRequestID: Int
+    let onChange: () -> Void
+    var onFocusChanged: (Bool) -> Void = { _ in }
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeUIView(context: Context) -> SelfSizingTextView {
+        let view = SelfSizingTextView()
+        view.delegate = context.coordinator
+        view.backgroundColor = .clear
+        view.textColor = .white
+        view.tintColor = accent
+        let descriptor = UIFontDescriptor
+            .preferredFontDescriptor(withTextStyle: .body)
+            .withDesign(.rounded) ?? UIFontDescriptor.preferredFontDescriptor(withTextStyle: .body)
+        view.font = UIFont(descriptor: descriptor, size: 0)
+        view.textContainerInset = UIEdgeInsets(top: 8, left: 0, bottom: 8, right: 0)
+        view.textContainer.lineFragmentPadding = 4
+        view.isScrollEnabled = false
+        view.autocapitalizationType = .sentences
+        view.autocorrectionType = .yes
+        view.smartQuotesType = .yes
+        view.keyboardAppearance = .dark
+        view.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return view
+    }
+
+    func updateUIView(_ uiView: SelfSizingTextView, context: Context) {
+        context.coordinator.parent = self
+        if uiView.text != text {
+            uiView.text = text
+            uiView.invalidateIntrinsicContentSize()
+        }
+        uiView.tintColor = accent
+        if focusRequestID > context.coordinator.lastHandledFocusRequestID {
+            context.coordinator.lastHandledFocusRequestID = focusRequestID
+            DispatchQueue.main.async { uiView.becomeFirstResponder() }
+        }
+    }
+
+    // sizeThatFits is the correct SwiftUI hook for UIViewRepresentable sizing.
+    // SwiftUI calls this to know how tall to make the view. We return the text
+    // view's natural content height, capped at 5 lines.
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: SelfSizingTextView, context: Context) -> CGSize? {
+        let width = proposal.width ?? 200
+        let lineHeight = uiView.font?.lineHeight ?? 20
+        let insets = uiView.textContainerInset.top + uiView.textContainerInset.bottom
+        let maxHeight = lineHeight * 5 + insets
+        let measured = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height
+        let height = min(measured, maxHeight)
+        let shouldScroll = measured > maxHeight + 1
+        if uiView.isScrollEnabled != shouldScroll {
+            uiView.isScrollEnabled = shouldScroll
+        }
+        return CGSize(width: width, height: height)
+    }
+
+    final class Coordinator: NSObject, UITextViewDelegate {
+        var parent: ComposerTextView
+        var lastHandledFocusRequestID = 0
+
+        init(_ parent: ComposerTextView) { self.parent = parent }
+
+        func textViewDidChange(_ textView: UITextView) {
+            parent.text = textView.text
+            parent.onChange()
+            textView.invalidateIntrinsicContentSize()
+        }
+
+        func textViewDidBeginEditing(_ textView: UITextView) { parent.onFocusChanged(true) }
+        func textViewDidEndEditing(_ textView: UITextView) { parent.onFocusChanged(false) }
+    }
 }
 
 private enum CommentOverflowAction {
@@ -529,7 +1128,7 @@ private struct CommentThreadNodeView: View {
     let onMore: (CommentOverflowAction) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             CommentThreadRow(
                 comment: node.comment,
                 postID: postID,
@@ -549,13 +1148,12 @@ private struct CommentThreadNodeView: View {
             )
 
             if !node.replies.isEmpty {
-                HStack(alignment: .top, spacing: 12) {
-                    Rectangle()
-                        .fill(AppTheme.line)
-                        .frame(width: 1)
+                HStack(alignment: .top, spacing: CommentThreadLayout.threadRailContentSpacing) {
+                    Color.clear
+                        .frame(width: CommentThreadLayout.threadRailWidth)
 
-                    VStack(alignment: .leading, spacing: 12) {
-                        ForEach(Array(node.replies.enumerated()), id: \.element.id) { index, reply in
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(node.replies) { reply in
                             // Replies render flat at depth 1 — no further
                             // nesting regardless of replyToCommentID chain.
                             CommentThreadRow(
@@ -577,18 +1175,22 @@ private struct CommentThreadNodeView: View {
                                     onMore(action)
                                 }
                             )
-
-                            if index < node.replies.count - 1 {
-                                Divider()
-                                    .overlay(AppTheme.line)
-                            }
                         }
                     }
                 }
-                .padding(.leading, 23)
+                .padding(.leading, CommentThreadLayout.threadRailLeading)
             }
         }
     }
+}
+
+private enum CommentThreadLayout {
+    static let avatarSize: CGFloat = 34
+    static let threadRailWidth: CGFloat = 1
+    static var threadRailLeading: CGFloat {
+        (avatarSize - threadRailWidth) / 2
+    }
+    static let threadRailContentSpacing: CGFloat = 18.5
 }
 
 private struct CommentThreadRow: View {
@@ -610,22 +1212,28 @@ private struct CommentThreadRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Button(action: onAuthorTap) {
-                AvatarView(avatar: comment.author.avatar, size: 34)
+                AvatarView(avatar: comment.author.avatar, size: CommentThreadLayout.avatarSize)
             }
             .buttonStyle(.plain)
 
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Button(action: onAuthorTap) {
-                        Text(comment.author.displayName)
-                            .font(.system(.headline, design: .rounded, weight: .semibold))
-                            .foregroundStyle(.white)
-                    }
-                    .buttonStyle(.plain)
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .top, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(alignment: .lastTextBaseline, spacing: 8) {
+                            Button(action: onAuthorTap) {
+                                VerifiedProfileLabel(profile: comment.author, spacing: 4, badgeSize: 11, badgeOffsetY: -0.5) {
+                                    Text(comment.author.displayName)
+                                        .font(AppTypography.rowTitle)
+                                        .foregroundStyle(.white)
+                                }
+                            }
+                            .buttonStyle(.plain)
 
-                    Text(comment.createdAt.minuteGranularityRelative)
-                        .font(.system(.caption, design: .rounded, weight: .medium))
-                        .foregroundStyle(AppTheme.softText)
+                            Text(comment.createdAt.minuteGranularityRelative)
+                                .font(AppTypography.metadata)
+                                .foregroundStyle(AppTheme.softText)
+                        }
+                    }
 
                     Spacer(minLength: 0)
 
@@ -655,13 +1263,9 @@ private struct CommentThreadRow: View {
                     .buttonStyle(.plain)
                 }
 
-                if let replyToDisplayName = comment.replyToDisplayName {
-                    Text("Replying to \(replyToDisplayName)")
-                        .font(.system(.caption, design: .rounded, weight: .semibold))
-                        .foregroundStyle(accent)
-                }
-
                 commentBody
+                    .padding(.top, 0)
+                    .padding(.bottom, 10)
 
                 HStack(spacing: 14) {
                     Button(action: onLike) {
@@ -669,27 +1273,20 @@ private struct CommentThreadRow: View {
                             comment.likeCount == 0 ? "Like" : "\(comment.likeCount)",
                             systemImage: comment.isLikedByViewer ? "heart.fill" : "heart"
                         )
-                        .font(.system(.caption, design: .rounded, weight: .semibold))
+                        .font(AppTypography.button)
                         .foregroundStyle(comment.isLikedByViewer ? accent : AppTheme.softText)
                     }
                     .buttonStyle(.plain)
 
                     Button("Reply", action: onReply)
-                        .font(.system(.caption, design: .rounded, weight: .semibold))
+                        .font(AppTypography.button)
                         .foregroundStyle(AppTheme.softText)
                         .buttonStyle(.plain)
                 }
             }
         }
-        .padding(10)
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(isHighlighted ? accent.opacity(0.12) : .clear)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(isHighlighted ? accent.opacity(0.45) : .clear, lineWidth: 1)
-        )
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 2)
         .id(comment.id)
     }
 
@@ -698,7 +1295,7 @@ private struct CommentThreadRow: View {
         switch comment.kind {
         case .text:
             Text(comment.text)
-                .font(.system(.body, design: .rounded))
+                .font(AppTypography.callout)
                 .foregroundStyle(.white.opacity(0.92))
         case .photo:
             VStack(alignment: .leading, spacing: 10) {
@@ -706,7 +1303,7 @@ private struct CommentThreadRow: View {
 
                 if !comment.text.isEmpty, comment.text != "Photo reply" {
                     Text(comment.text)
-                        .font(.system(.body, design: .rounded))
+                        .font(AppTypography.callout)
                         .foregroundStyle(.white.opacity(0.92))
                 }
             }
@@ -716,7 +1313,7 @@ private struct CommentThreadRow: View {
 
                 if !comment.text.isEmpty, comment.text != "GIF reply" {
                     Text(comment.text)
-                        .font(.system(.body, design: .rounded))
+                        .font(AppTypography.callout)
                         .foregroundStyle(.white.opacity(0.92))
                 }
             }
@@ -736,13 +1333,13 @@ private struct CommentPhotoAttachment: View {
                     AnimatedGIFView(data: photoData)
                         .frame(maxWidth: .infinity)
                         .frame(maxHeight: 300)
-                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 } else if let image = UIImage(data: photoData) {
                     Image(uiImage: image)
                         .resizable()
                         .scaledToFit()
                         .frame(maxWidth: .infinity)
-                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 } else {
                     placeholder
                 }
@@ -758,7 +1355,7 @@ private struct CommentPhotoAttachment: View {
     }
 
     private var placeholder: some View {
-        RoundedRectangle(cornerRadius: 18, style: .continuous)
+        RoundedRectangle(cornerRadius: 16, style: .continuous)
             .fill(.white.opacity(0.05))
             .frame(height: 100)
             .overlay(
@@ -786,13 +1383,13 @@ private struct RemoteMediaView: View {
                     AnimatedGIFView(data: data)
                         .frame(maxWidth: .infinity)
                         .frame(maxHeight: 300)
-                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 } else if let image = UIImage(data: data) {
                     Image(uiImage: image)
                         .resizable()
                         .scaledToFit()
                         .frame(maxWidth: .infinity)
-                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 } else {
                     loadingPlaceholder
                 }
@@ -806,7 +1403,7 @@ private struct RemoteMediaView: View {
     }
 
     private var loadingPlaceholder: some View {
-        RoundedRectangle(cornerRadius: 18, style: .continuous)
+        RoundedRectangle(cornerRadius: 16, style: .continuous)
             .fill(.white.opacity(0.05))
             .frame(height: 160)
             .overlay(
@@ -887,6 +1484,9 @@ private struct SystemImagePicker: UIViewControllerRepresentable {
         picker.sourceType = UIImagePickerController.isSourceTypeAvailable(sourceType) ? sourceType : .photoLibrary
         picker.delegate = context.coordinator
         picker.allowsEditing = false
+        // Full-screen so the camera viewfinder fills the display edge-to-edge.
+        // Presenting as a sheet clips the preview behind the drag handle.
+        picker.modalPresentationStyle = .fullScreen
         return picker
     }
 

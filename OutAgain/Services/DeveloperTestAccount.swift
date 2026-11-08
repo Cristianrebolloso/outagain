@@ -17,8 +17,8 @@ enum DeveloperTestAccount {
     /// Whether the `1`/`1` shortcut is enabled.
     ///
     /// Enabled only for Debug builds, and only when local credentials have
-    /// been configured outside the repo. A TestFlight or App Store binary
-    /// built in Release mode will never attempt to resolve the shortcut.
+    /// been configured outside the repo. A distributed Release binary will
+    /// never attempt to resolve the shortcut.
     static var isEnabled: Bool {
         #if DEBUG
         return localCredentials != nil

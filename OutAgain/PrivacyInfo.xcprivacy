@@ -1,0 +1,242 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+
+    <!--
+        NSPrivacyTracking
+        Out Again does not request cross-app tracking authorization. AdMob uses
+        non-personalized delivery with publisher first-party ID and automatic
+        device-location collection disabled. Google's bundled privacy manifest
+        separately declares the Mobile Ads SDK's data collection capabilities.
+    -->
+    <key>NSPrivacyTracking</key>
+    <false/>
+
+    <!--
+        NSPrivacyTrackingDomains
+        Empty because NSPrivacyTracking is false — no tracking domains.
+    -->
+    <key>NSPrivacyTrackingDomains</key>
+    <array/>
+
+    <!--
+        NSPrivacyCollectedDataTypes
+        App-owned collection is declared below. Google Mobile Ads and UMP
+        include separate manifests for their SDK data. The public policy and
+        App Store disclosures also cover advertising measurement and diagnostics.
+    -->
+    <key>NSPrivacyCollectedDataTypes</key>
+    <array>
+
+        <!-- ── NAME ─────────────────────────────────────────────────────── -->
+        <!-- Collected during onboarding to create and display user profiles. -->
+        <dict>
+            <key>NSPrivacyCollectedDataType</key>
+            <string>NSPrivacyCollectedDataTypeName</string>
+            <key>NSPrivacyCollectedDataTypeLinked</key>
+            <true/>
+            <key>NSPrivacyCollectedDataTypeTracking</key>
+            <false/>
+            <key>NSPrivacyCollectedDataTypePurposes</key>
+            <array>
+                <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+            </array>
+        </dict>
+
+        <!-- ── EMAIL ADDRESS ─────────────────────────────────────────────── -->
+        <!-- Used for account creation and sign-in. -->
+        <dict>
+            <key>NSPrivacyCollectedDataType</key>
+            <string>NSPrivacyCollectedDataTypeEmailAddress</string>
+            <key>NSPrivacyCollectedDataTypeLinked</key>
+            <true/>
+            <key>NSPrivacyCollectedDataTypeTracking</key>
+            <false/>
+            <key>NSPrivacyCollectedDataTypePurposes</key>
+            <array>
+                <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+                <string>NSPrivacyCollectedDataTypePurposeAccountManagement</string>
+            </array>
+        </dict>
+
+        <!-- ── PHOTOS OR VIDEOS ──────────────────────────────────────────── -->
+        <!-- Users select photos from their library for profile avatars and
+             post moments. Captured photos can optionally be saved back to
+             the camera roll (add-only permission). -->
+        <dict>
+            <key>NSPrivacyCollectedDataType</key>
+            <string>NSPrivacyCollectedDataTypePhotosOrVideos</string>
+            <key>NSPrivacyCollectedDataTypeLinked</key>
+            <true/>
+            <key>NSPrivacyCollectedDataTypeTracking</key>
+            <false/>
+            <key>NSPrivacyCollectedDataTypePurposes</key>
+            <array>
+                <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+            </array>
+        </dict>
+
+        <!-- ── PRECISE LOCATION ──────────────────────────────────────────── -->
+        <!-- Location is requested when the user creates a post so that
+             moments can be tagged with a venue or locality (e.g. "Austin, TX").
+             Location data is stored with the post record and displayed to
+             the user's friends. Not used for advertising or profiling. -->
+        <dict>
+            <key>NSPrivacyCollectedDataType</key>
+            <string>NSPrivacyCollectedDataTypePreciseLocation</string>
+            <key>NSPrivacyCollectedDataTypeLinked</key>
+            <true/>
+            <key>NSPrivacyCollectedDataTypeTracking</key>
+            <false/>
+            <key>NSPrivacyCollectedDataTypePurposes</key>
+            <array>
+                <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+            </array>
+        </dict>
+
+        <!-- ── USER ID ───────────────────────────────────────────────────── -->
+        <!-- A UUID is generated per account and used to identify the user
+             across their posts, comments, reactions, and friend connections. -->
+        <dict>
+            <key>NSPrivacyCollectedDataType</key>
+            <string>NSPrivacyCollectedDataTypeUserID</string>
+            <key>NSPrivacyCollectedDataTypeLinked</key>
+            <true/>
+            <key>NSPrivacyCollectedDataTypeTracking</key>
+            <false/>
+            <key>NSPrivacyCollectedDataTypePurposes</key>
+            <array>
+                <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+                <string>NSPrivacyCollectedDataTypePurposeAccountManagement</string>
+            </array>
+        </dict>
+
+        <!-- ── USER CONTENT (posts and comments) ────────────────────────── -->
+        <!-- Photos and captions the user captures and publishes as moments,
+             and text/image comments posted on friends' moments. -->
+        <dict>
+            <key>NSPrivacyCollectedDataType</key>
+            <string>NSPrivacyCollectedDataTypeUserContent</string>
+            <key>NSPrivacyCollectedDataTypeLinked</key>
+            <true/>
+            <key>NSPrivacyCollectedDataTypeTracking</key>
+            <false/>
+            <key>NSPrivacyCollectedDataTypePurposes</key>
+            <array>
+                <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+            </array>
+        </dict>
+
+        <!-- ── OTHER DATA (drink tags, venue name, theme preferences) ────── -->
+        <!-- In-app preference data (accent color, background theme, app icon,
+             notification settings) and activity metadata (drink tags, group
+             membership, live activity state) stored to provide a consistent
+             personalized experience. -->
+        <dict>
+            <key>NSPrivacyCollectedDataType</key>
+            <string>NSPrivacyCollectedDataTypeOtherDataTypes</string>
+            <key>NSPrivacyCollectedDataTypeLinked</key>
+            <true/>
+            <key>NSPrivacyCollectedDataTypeTracking</key>
+            <false/>
+            <key>NSPrivacyCollectedDataTypePurposes</key>
+            <array>
+                <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+            </array>
+        </dict>
+
+    </array>
+
+    <!--
+        NSPrivacyAccessedAPITypes
+        Required-reasons declarations for privacy-sensitive system APIs.
+        Apple's automated system verifies each API used in the binary
+        has a declared reason code here.
+    -->
+    <key>NSPrivacyAccessedAPITypes</key>
+    <array>
+
+        <!-- ── USER DEFAULTS ─────────────────────────────────────────────── -->
+        <!--
+            Used to persist:
+              • Auth session tokens (access + refresh)       — CA92.1
+              • User preferences (theme, accent, app icon)   — CA92.1
+              • Feed cache for cold-launch hydration         — CA92.1
+              • Viewer profile cache                         — CA92.1
+              • Notification preferences                     — CA92.1
+              • V1.1 migration flag                          — CA92.1
+              • Pending notification delete queue            — CA92.1
+
+            Reason CA92.1: Access info from the same app that wrote it.
+        -->
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <string>CA92.1</string>
+            </array>
+        </dict>
+
+        <!-- ── FILE TIMESTAMP ────────────────────────────────────────────── -->
+        <!--
+            The Supabase Swift SDK reads file timestamps on cached network
+            responses and session storage files as part of its internal HTTP
+            caching and token-persistence logic.
+
+            Reason C617.1: Access file timestamps of files inside the app
+            container that the app itself created.
+        -->
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <string>C617.1</string>
+            </array>
+        </dict>
+
+        <!-- ── DISK SPACE ─────────────────────────────────────────────────── -->
+        <!--
+            The image compressor checks available disk space before writing
+            compressed photo data to a temporary file during upload preparation,
+            to avoid writing to a full disk and crashing.
+
+            Reason E174.1: Display available disk space to the user,
+            or to check whether there is sufficient storage to complete
+            an operation the user has requested.
+        -->
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategoryDiskSpace</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <string>E174.1</string>
+            </array>
+        </dict>
+
+        <!-- ── SYSTEM BOOT TIME ───────────────────────────────────────────── -->
+        <!--
+            AVFoundation (used by CameraPipeline) internally accesses system
+            boot time as part of its AV session and capture timing logic.
+            This is not called directly by app code but is used by the
+            camera framework.
+
+            Reason 35F9.1: Measure the time the user spends in the app to
+            improve the app experience (used internally by AVFoundation for
+            capture session timing).
+        -->
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategorySystemBootTime</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <string>35F9.1</string>
+            </array>
+        </dict>
+
+    </array>
+
+</dict>
+</plist>

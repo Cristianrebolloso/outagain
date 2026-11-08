@@ -1,66 +1,130 @@
 import SwiftUI
 
-/// Friends vs. Friends-of-Friends feed scope selector.
-///
-/// Position rationale:
-/// This used to sit at the very top of Home, immediately under the
-/// logo. That gave it the prime slot on the screen, which made
-/// sense when the scope toggle was the primary lever the viewer
-/// pulled on open. With the Tonight strip in place, the anchor of
-/// attention should be *who's out right now* — that's the object
-/// that earns re-opens. The scope slider still matters (it filters
-/// the feed below), but it's a control that belongs adjacent to
-/// the feed it modifies, not at the top of the screen competing
-/// with the social pulse. Placing it between the Tonight strip
-/// and `feedPosts` also reads correctly visually: Tonight is its
-/// own object (stories-style strip), and the slider then acts as
-/// the feed's header control, which is conventional.
 struct HomeFeedScopeControl: View {
     @Environment(AppStore.self) private var store
-    @Namespace private var scopeNamespace
+    @Environment(PermissionCenter.self) private var permissions
 
     var body: some View {
-        GlassEffectContainer(spacing: 0) {
-            HStack(spacing: 6) {
-                ForEach(FeedScope.allCases) { scope in
-                    Button {
-                        withAnimation(.snappy(duration: 0.24)) {
-                            store.feedScope = scope
-                            store.selectedPresenceClusterID = nil
-                        }
-                    } label: {
-                        ZStack {
-                            if store.feedScope == scope {
-                                Capsule()
-                                    .fill(.white.opacity(0.11))
-                                    .overlay(
-                                        Capsule()
-                                            .strokeBorder(.white.opacity(0.18), lineWidth: 1)
-                                    )
-                                    .glassEffect(.regular.interactive(), in: .capsule)
-                                    .matchedGeometryEffect(id: "feed_scope_selection", in: scopeNamespace)
-                            }
+        @Bindable var store = store
+        VStack(alignment: .leading, spacing: 12) {
+            if store.hasLocalFeedPosts {
+                Picker("Home feed", selection: $store.feedScope) {
+                    Text("Friends").tag(FeedScope.friends)
+                    Text("Local").tag(FeedScope.local)
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("home.feedScope")
+            }
 
-                            Text(scope.title)
-                                .font(.system(.footnote, design: .rounded, weight: .semibold))
-                                .foregroundStyle(store.feedScope == scope ? .white : AppTheme.softText)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.9)
-                                .frame(maxWidth: .infinity)
-                                .frame(height: 42)
-                        }
-                        .contentShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
+            if store.feedScope == .local && store.hasLocalFeedPosts {
+                Label(permissions.currentLocality.map { "\($0) · Within 35 miles - Last 48 hours" } ?? "Within 35 miles - Last 48 hours",
+                      systemImage: "location")
+                    .font(AppTypography.caption)
+                    .foregroundStyle(AppTheme.softText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            } else if let recap = store.latestNightRecapRoute {
+                Button {
+                    store.notificationDestination = .recap(recap)
+                } label: {
+                    Label("Last night's photos", systemImage: "photo.stack.fill")
+                        .font(AppTypography.buttonFootnote)
+                }
+                .buttonStyle(.glass)
+                .accessibilityIdentifier("home.nightRecap")
+            }
+        }
+    }
+}
+
+/// Discovery must keep working while the picker is hidden and Friends is selected.
+/// Attach to Home itself, not to its conditional header.
+struct HomeLocalDiscoveryRefresh: ViewModifier {
+    @Environment(AppStore.self) private var store
+    @Environment(PermissionCenter.self) private var permissions
+    @Environment(\.scenePhase) private var scenePhase
+
+    private var shouldRefresh: Bool {
+        scenePhase == .active && store.isLive && store.selectedTab == .home && !store.isLayoutPreview
+    }
+
+    func body(content: Content) -> some View {
+        content
+        .onChange(of: store.hasLocalFeedPosts, initial: true) { _, _ in
+            store.reconcileLocalFeedAvailability()
+        }
+        .onChange(of: store.feedScope) { _, scope in
+            guard scope == .local, shouldRefresh else { return }
+            permissions.requestLocation()
+            Task { await store.refreshLocalFeed(at: permissions.currentLocationSnapshot, force: true) }
+        }
+        .onChange(of: permissions.currentLocationSnapshot) { _, location in
+            guard shouldRefresh, permissions.locationStatus == .granted else { return }
+            // GPS updates must not cancel an in-flight network request.
+            Task { await store.refreshLocalFeed(at: location) }
+        }
+        .task(id: shouldRefresh) {
+            guard shouldRefresh else { return }
+            permissions.requestLocation()
+            if permissions.locationStatus == .granted {
+                await store.refreshLocalFeed(at: permissions.currentLocationSnapshot)
+            }
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(60)) } catch { return }
+                store.reconcileLocalFeedAvailability()
+                guard permissions.locationStatus == .granted else { continue }
+                permissions.requestLocation()
+                await store.refreshLocalFeed(at: permissions.currentLocationSnapshot)
+            }
+        }
+        .onChange(of: permissions.locationStatus, initial: true) { _, status in
+            if status == .denied && !store.isLayoutPreview {
+                store.clearLocalFeed()
+            }
+        }
+    }
+}
+
+struct LocalFeedEmptyState: View {
+    @Environment(AppStore.self) private var store
+    @Environment(PermissionCenter.self) private var permissions
+
+    var body: some View {
+        NightPanel(cornerRadius: 24, padding: 20) {
+            VStack(alignment: .leading, spacing: 12) {
+                if store.isLoadingLocalFeed {
+                    ProgressView("Finding nearby photos…")
+                        .tint(.white)
+                } else if permissions.locationStatus == .denied {
+                    Label("See what's happening nearby", systemImage: "location.slash")
+                        .font(AppTypography.rowTitle)
+                    Text("Allow location to see posts shared within 35 miles.")
+                        .font(AppTypography.rowSubtitle)
+                    Button("Open Settings") { permissions.openSettings() }.buttonStyle(.glass)
+                } else if let error = store.localFeedError {
+                    Text(error).font(AppTypography.rowSubtitle)
+                    Button("Try Again") {
+                        permissions.requestLocation()
+                        Task { await store.refreshLocalFeed(at: permissions.currentLocationSnapshot, force: true) }
+                    }.buttonStyle(.glass)
+                } else if permissions.currentLocationSnapshot == nil && !store.isLayoutPreview {
+                    Label("Find your local feed", systemImage: "location")
+                        .font(AppTypography.rowTitle)
+                    Text("Use your location to see recent photos around you.").font(AppTypography.rowSubtitle)
+                    Button("Use My Location") { permissions.requestLocation() }.buttonStyle(.glass)
+                } else {
+                    Label("It's quiet around here 😳", systemImage: "moon.stars")
+                        .font(AppTypography.rowTitle)
+                    Text("Be the first to share a photo to Local tonight")
+                        .font(AppTypography.rowSubtitle)
+                    Button("Take a Photo") { store.openPostFlow() }
+                        .buttonStyle(.glass)
+                        .frame(maxWidth: .infinity, alignment: .center)
                 }
             }
-            .padding(6)
-            .background(.white.opacity(0.05), in: Capsule())
-            .overlay(
-                Capsule()
-                    .strokeBorder(AppTheme.line, lineWidth: 1)
-            )
-            .glassEffect(.regular, in: .capsule)
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .padding(.horizontal, AppLayout.screenPadding)
     }
 }

@@ -1,6 +1,72 @@
 import Foundation
+@preconcurrency import UserNotifications
 
 extension AppStore {
+    func prepareNotificationPreferences(for userID: UUID) {
+        guard notificationPreferenceUserID != userID else { return }
+        notificationPreferenceUserID = userID
+        notificationPreferenceRevision = UUID()
+        notificationPreferences = NotificationPreferenceStorage.loadPush(for: userID)
+        liveActivityPreferences = NotificationPreferenceStorage.loadLiveActivity(for: userID)
+        notificationPreferenceError = nil
+        isLoadingNotificationPreferences = false
+        isSavingNotificationPreferences = false
+    }
+
+    func refreshNotificationPreferences() async {
+        guard let userID = viewer?.id else { return }
+        prepareNotificationPreferences(for: userID)
+        guard !isLoadingNotificationPreferences, !isSavingNotificationPreferences else { return }
+        let revision = UUID()
+        notificationPreferenceRevision = revision
+        isLoadingNotificationPreferences = true
+        defer {
+            if notificationPreferenceRevision == revision { isLoadingNotificationPreferences = false }
+        }
+        do {
+            // The old social toggles were local-only. Migrate existing opt-outs
+            // once, without enabling anything already disabled on the server.
+            if !NotificationPreferenceStorage.hasSyncedPush(for: userID) {
+                for category in PushNotificationCategory.allCases where !notificationPreferences[category] {
+                    guard viewer?.id == userID, notificationPreferenceRevision == revision else { return }
+                    try await backend.setNotificationPreference(category, enabled: false, for: userID)
+                }
+            }
+            let preferences = try await backend.fetchNotificationPreferences(for: userID)
+            guard viewer?.id == userID, notificationPreferenceRevision == revision else { return }
+            notificationPreferences = preferences
+            NotificationPreferenceStorage.markPushSynced(for: userID)
+            notificationPreferenceError = nil
+        } catch {
+            guard viewer?.id == userID, notificationPreferenceRevision == revision else { return }
+            notificationPreferenceError = "Couldn't sync your notification settings. Try again."
+        }
+    }
+
+    func setNotificationPreference(_ category: PushNotificationCategory, enabled: Bool) {
+        guard let userID = viewer?.id, !isSavingNotificationPreferences, !isLoadingNotificationPreferences else { return }
+        prepareNotificationPreferences(for: userID)
+        let previous = notificationPreferences[category]
+        let revision = UUID()
+        notificationPreferenceRevision = revision
+        notificationPreferences[category] = enabled
+        isSavingNotificationPreferences = true
+        notificationPreferenceError = nil
+        Task {
+            defer {
+                if notificationPreferenceRevision == revision { isSavingNotificationPreferences = false }
+            }
+            do {
+                try await backend.setNotificationPreference(category, enabled: enabled, for: userID)
+                guard viewer?.id == userID, notificationPreferenceRevision == revision else { return }
+            } catch {
+                guard viewer?.id == userID, notificationPreferenceRevision == revision else { return }
+                notificationPreferences[category] = previous
+                notificationPreferenceError = "Couldn't save your \(category.title) setting. Try again."
+            }
+        }
+    }
+
     /// Forwards an APNs device token into the backend for the signed-in viewer.
     ///
     /// Called by `OutAgainAppDelegate` when UIKit hands us the token after
@@ -28,8 +94,8 @@ extension AppStore {
 
         // APNs environment must match the entitlement that produced this
         // token. Debug builds use the development entitlement even on a real
-        // iPhone connected through Xcode; Release/TestFlight/App Store builds
-        // use production. Mismatching these is a silent push killer.
+        // iPhone connected through Xcode; distributed Release builds use
+        // production. Mismatching these is a silent push killer.
         let deviceEnvironment: DeviceEnvironment
         #if DEBUG
         deviceEnvironment = .development
@@ -81,5 +147,54 @@ extension AppStore {
             print("[APNs] Self-test failed: \(error.localizedDescription)")
             #endif
         }
+    }
+
+    func removeDeliveredNotifications(forPostIDs postIDs: Set<UUID>) {
+        let postIDStrings = Set(postIDs.map { $0.uuidString.lowercased() })
+        guard !postIDStrings.isEmpty else { return }
+
+        let center = UNUserNotificationCenter.current()
+        center.getDeliveredNotifications { delivered in
+            let matchingIdentifiers = delivered.compactMap { notification -> String? in
+                let content = notification.request.content
+                if postIDStrings.contains(content.threadIdentifier.lowercased()) {
+                    return notification.request.identifier
+                }
+
+                guard Self.notificationUserInfo(content.userInfo, referencesAny: postIDStrings) else {
+                    return nil
+                }
+
+                return notification.request.identifier
+            }
+
+            guard !matchingIdentifiers.isEmpty else { return }
+            center.removeDeliveredNotifications(withIdentifiers: matchingIdentifiers)
+        }
+    }
+
+    func removeDeliveredNotifications(forPostID postID: UUID) {
+        removeDeliveredNotifications(forPostIDs: [postID])
+    }
+
+    nonisolated private static func notificationUserInfo(
+        _ userInfo: [AnyHashable: Any],
+        referencesAny postIDStrings: Set<String>
+    ) -> Bool {
+        if let nested = userInfo["outagain"] as? [String: Any],
+           let postID = nested["postId"] as? String {
+            return postIDStrings.contains(postID.lowercased())
+        }
+
+        if let nested = userInfo["outagain"] as? [AnyHashable: Any],
+           let postID = nested["postId"] as? String {
+            return postIDStrings.contains(postID.lowercased())
+        }
+
+        if let postID = userInfo["postId"] as? String {
+            return postIDStrings.contains(postID.lowercased())
+        }
+
+        return false
     }
 }

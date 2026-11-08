@@ -73,7 +73,7 @@ final class PerformanceTracker {
     /// Print a full session report. Call after a representative user session.
     @discardableResult
     func printReport() -> PerformanceReport {
-        let callSummary = SupabaseCallLogger.shared.printSessionSummary()
+        _ = SupabaseCallLogger.shared.printSessionSummary()
 
         let timeToFeedStr = coldStartToFeedMs.map { String(format: "%.0f ms", $0) } ?? "—"
         let avgUploadKB = uploadSizesSampled.isEmpty ? 0 :

@@ -1,33 +1,18 @@
 import ActivityKit
 import Foundation
-import UIKit
 
 struct QuickPostLiveActivityPayload {
-    var headline: String
-    var detail: String
-    var primaryHex: String
-    var secondaryHex: String
-    var avatarSymbol: String
-    var avatarPrimaryHex: String
-    var avatarSecondaryHex: String
-    var avatarImageData: Data?
-    var avatarRemoteURL: String?
     var postCountToday: Int
     var createdAt: Date
+    var cycleEnd: Date
 }
 
 enum QuickPostLiveActivityManager {
     @discardableResult
     static func startOrUpdate(with payload: QuickPostLiveActivityPayload) async -> Bool {
-        // Do not pre-check areActivitiesEnabled — that flag is false until the
-        // user has been prompted at least once via Activity.request(). Guarding
-        // on it prevents the system permission prompt from ever appearing.
-        // Activity.request() handles all cases: triggers the prompt on first
-        // call, succeeds silently if already authorized, and throws (caught by
-        // try? below) if the user has denied or the system prevents it (e.g.
-        // Low Power Mode).
-
-        let avatarImageData = await resolvedAvatarImageData(from: payload)
+        // The app defaults on, but the system's Live Activities switch remains
+        // authoritative. A denied request is not an invitation to prompt again.
+        guard ActivityAuthorizationInfo().areActivitiesEnabled else { return false }
 
         let attributes = QuickPostLiveActivityAttributes(
             activityID: "quick-post",
@@ -35,37 +20,39 @@ enum QuickPostLiveActivityManager {
         )
         let content = ActivityContent(
             state: QuickPostLiveActivityAttributes.ContentState(
-                headline: payload.headline,
-                detail: payload.detail,
-                primaryHex: payload.primaryHex,
-                secondaryHex: payload.secondaryHex,
-                avatarSymbol: payload.avatarSymbol,
-                avatarPrimaryHex: payload.avatarPrimaryHex,
-                avatarSecondaryHex: payload.avatarSecondaryHex,
-                avatarImageData: avatarImageData,
-                avatarRemoteURL: payload.avatarRemoteURL,
                 postCountToday: payload.postCountToday,
                 createdAt: payload.createdAt
             ),
-            staleDate: Calendar.current.date(byAdding: .hour, value: 8, to: payload.createdAt)
+            staleDate: payload.cycleEnd
         )
 
-        if let existing = Activity<QuickPostLiveActivityAttributes>.activities.first {
+        await endExpiredActivities(now: payload.createdAt)
+
+        let activities = Activity<QuickPostLiveActivityAttributes>.activities
+        if let existing = activities.first(where: {
+            isInSameLiveActivityCycle($0.content.state.createdAt, as: payload.createdAt)
+        }) {
             await existing.update(content)
+            scheduleEnd(at: payload.cycleEnd)
             return true
         } else {
-            do {
-                try Activity.request(
-                    attributes: attributes,
-                    content: content,
-                    pushType: nil
-                )
-                return true
-            } catch {
-                #if DEBUG
-                print("[LiveActivity] Request failed: \(error.localizedDescription)")
-                #endif
-                return false
+            for activity in activities {
+                await activity.end(nil, dismissalPolicy: .immediate)
+            }
+
+            let didStart = await requestActivity(attributes: attributes, content: content)
+            if didStart {
+                scheduleEnd(at: payload.cycleEnd)
+            }
+            return didStart
+        }
+    }
+
+    static func endExpiredActivities(now: Date = .now) async {
+        for activity in Activity<QuickPostLiveActivityAttributes>.activities {
+            let cycleEnd = liveActivityCycleWindow(reference: activity.content.state.createdAt).upperBound
+            if now >= cycleEnd {
+                await activity.end(nil, dismissalPolicy: .immediate)
             }
         }
     }
@@ -76,44 +63,62 @@ enum QuickPostLiveActivityManager {
         }
     }
 
-    private static func resolvedAvatarImageData(
-        from payload: QuickPostLiveActivityPayload
-    ) async -> Data? {
-        if let imageData = payload.avatarImageData,
-           let thumbnailData = makeThumbnailData(from: imageData) {
-            return thumbnailData
-        }
-
-        guard let avatarRemoteURL = payload.avatarRemoteURL,
-              let url = URL(string: avatarRemoteURL)
-        else {
-            return nil
-        }
-
+    private static func requestActivity(
+        attributes: QuickPostLiveActivityAttributes,
+        content: ActivityContent<QuickPostLiveActivityAttributes.ContentState>
+    ) async -> Bool {
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            return makeThumbnailData(from: data)
+            _ = try Activity.request(
+                attributes: attributes,
+                content: content,
+                pushType: nil
+            )
+            return true
         } catch {
-            return nil
+            #if DEBUG
+            print("[LiveActivity] Request failed: \(error.localizedDescription)")
+            #endif
+            return false
         }
     }
 
-    private static func makeThumbnailData(from data: Data) -> Data? {
-        guard let image = UIImage(data: data) else { return nil }
-        let targetSize = CGSize(width: 120, height: 120)
-        let renderer = UIGraphicsImageRenderer(size: targetSize)
-        let rendered = renderer.image { _ in
-            let scale = max(targetSize.width / image.size.width, targetSize.height / image.size.height)
-            let scaledSize = CGSize(
-                width: image.size.width * scale,
-                height: image.size.height * scale
-            )
-            let origin = CGPoint(
-                x: (targetSize.width - scaledSize.width) / 2,
-                y: (targetSize.height - scaledSize.height) / 2
-            )
-            image.draw(in: CGRect(origin: origin, size: scaledSize))
+    private static func scheduleEnd(at cycleEnd: Date) {
+        let secondsUntilEnd = cycleEnd.timeIntervalSinceNow
+        guard secondsUntilEnd > 0 else {
+            Task {
+                await endExpiredActivities()
+            }
+            return
         }
-        return rendered.jpegData(compressionQuality: 0.82)
+
+        Task {
+            try? await Task.sleep(nanoseconds: UInt64(secondsUntilEnd * 1_000_000_000))
+            await endExpiredActivities()
+        }
+    }
+
+    private static func isInSameLiveActivityCycle(_ candidate: Date, as reference: Date) -> Bool {
+        let window = liveActivityCycleWindow(reference: reference)
+        return candidate >= window.lowerBound && candidate < window.upperBound
+    }
+
+    private static func liveActivityCycleWindow(reference: Date) -> ClosedRange<Date> {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+
+        let hour = calendar.component(.hour, from: reference)
+        let anchorDay: Date
+        if hour < 7 {
+            anchorDay = calendar.date(byAdding: .day, value: -1, to: reference) ?? reference
+        } else {
+            anchorDay = reference
+        }
+
+        let startOfAnchor = calendar.startOfDay(for: anchorDay)
+        let start = calendar.date(byAdding: .hour, value: 7, to: startOfAnchor) ?? anchorDay
+        let nextDay = calendar.date(byAdding: .day, value: 1, to: startOfAnchor) ?? anchorDay
+        let end = calendar.date(byAdding: .hour, value: 7, to: nextDay) ?? nextDay
+
+        return start...end
     }
 }

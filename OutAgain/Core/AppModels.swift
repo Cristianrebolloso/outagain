@@ -3,44 +3,95 @@ import CoreLocation
 import SwiftUI
 
 enum AccentColorChoice: String, CaseIterable, Identifiable {
-    case purple = "purple"
-    case blue   = "blue"
-    case pink   = "pink"
-    case green  = "green"
-    case white  = "white"
-    case gold   = "gold"
+    case purple  = "purple"
+    case blue    = "blue"
+    case skyBlue = "skyBlue"
+    case pink    = "pink"
+    case green   = "green"
+    case white   = "white"
+    case orange  = "orange"
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
-        case .purple: return "Party Purple"
-        case .blue:   return "Liberal Blue"
-        case .pink:   return "Racist Pink"
-        case .green:  return "Gay Green"
-        case .white:  return "Normal White"
-        case .gold:   return "Beer"
+        case .purple:  return "Party Purple"
+        case .blue:    return "Liberal Blue"
+        case .skyBlue: return "Sky Blue"
+        case .pink:    return "Racist Pink"
+        case .green:   return "Gay Green"
+        case .white:   return "Normal White"
+        case .orange:  return "Orange"
         }
     }
 
     var color: Color {
         switch self {
-        case .purple: return Color(hex: "#A855F7")
-        case .blue:   return Color(hex: "#3B82F6")
-        case .pink:   return Color(hex: "#EC4899")
-        case .green:  return Color(hex: "#22C55E")
-        case .white:  return Color.white
-        case .gold:   return Color(hex: "#F5C451")
+        case .purple:  return Color(hex: "#A855F7")
+        case .blue:    return Color(hex: "#1D3FAB")
+        case .skyBlue: return Color(hex: "#38BDF8")
+        case .pink:    return Color(hex: "#EC4899")
+        case .green:   return Color(hex: "#22C55E")
+        case .white:   return Color.white
+        case .orange:  return Color(hex: "#FF7A1A")
         }
     }
 
     var swatch: Color { color }
 }
 
+enum BackgroundTheme: String, CaseIterable, Identifiable, Codable {
+    case standard = "standard"
+    case original = "original"
+    case speakeasy = "speakeasy"
+    case night    = "night"
+    case orange   = "orange"
+    case green    = "green"
+    case pink     = "pink"
+    case blue     = "blue"
+
+    static var allCases: [BackgroundTheme] {
+        [
+            .standard,
+            .night,
+            .orange,
+            .green,
+            .pink,
+            .blue,
+        ]
+    }
+
+    var id: String { rawValue }
+
+    var availableTheme: BackgroundTheme {
+        switch self {
+        case .original, .speakeasy:
+            return .standard
+        default:
+            return self
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .standard: return "11B"
+        case .original, .speakeasy: return "11B"
+        case .night:    return "Night"
+        case .orange:   return "Mallory Orange"
+        case .green:    return "Forest"
+        case .pink:     return "Rose"
+        case .blue:     return "Ocean"
+        }
+    }
+}
+
+
 enum AppTab: String, CaseIterable, Identifiable, Hashable {
     case home
-    case friends
     case activity
+    case post
+    case friends
+    case admin
     case profile
 
     var id: String { rawValue }
@@ -48,7 +99,9 @@ enum AppTab: String, CaseIterable, Identifiable, Hashable {
     var title: String {
         switch self {
         case .home: "Home"
-        case .friends: "Friends"
+        case .post: "Post"
+        case .friends: "People"
+        case .admin: "Admin"
         case .activity: "Activity"
         case .profile: "Profile"
         }
@@ -57,11 +110,22 @@ enum AppTab: String, CaseIterable, Identifiable, Hashable {
     var symbol: String {
         switch self {
         case .home: "house.fill"
+        case .post: "camera.fill"
         case .friends: "person.2.fill"
+        case .admin: "megaphone.fill"
         case .activity: "bell.badge.fill"
         case .profile: "person.crop.circle.fill"
         }
     }
+}
+
+enum ProfileOverlayRoute: Hashable, Identifiable {
+    case editProfile
+    case settings
+    case viewerFriends
+    case userProfile(UserProfile)
+
+    var id: Self { self }
 }
 
 enum FriendsPageMode: String, CaseIterable, Identifiable, Hashable {
@@ -80,14 +144,14 @@ enum FriendsPageMode: String, CaseIterable, Identifiable, Hashable {
 
 enum FeedScope: String, CaseIterable, Identifiable, Hashable {
     case friends
-    case friendsOfFriends
+    case local
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .friends: "Friends"
-        case .friendsOfFriends: "Friends of Friends"
+        case .local: "Local"
         }
     }
 }
@@ -179,6 +243,7 @@ enum ReactionKind: String, CaseIterable, Hashable, Identifiable, Codable {
     case cheers
     case spark
     case fire
+    case dislike
 
     var id: String { rawValue }
 
@@ -187,6 +252,7 @@ enum ReactionKind: String, CaseIterable, Hashable, Identifiable, Codable {
         case .cheers: "heart.fill"
         case .spark: "sparkles"
         case .fire: "flame.fill"
+        case .dislike: "hand.thumbsdown.fill"
         }
     }
 
@@ -195,6 +261,7 @@ enum ReactionKind: String, CaseIterable, Hashable, Identifiable, Codable {
         case .cheers: "Like"
         case .spark: "Locked In"
         case .fire: "Heating Up"
+        case .dislike: "Did not fw"
         }
     }
 }
@@ -203,13 +270,18 @@ enum NotificationKind: String, Hashable {
     case friendPost
     case venuePulse
     case tagged
+    case commentTagged
     case sharedMoment
     case comment
     case photoReply
     case reaction
+    case commentLike
     case nearby
+    case nightRecap
     case friendRequest
     case friendAccepted
+    case profileVerified
+    case announcement
     /// Sent to all members (except the creator) when they are added to a night group.
     case groupAdded
 
@@ -218,16 +290,22 @@ enum NotificationKind: String, Hashable {
         case .friendPost: "camera.fill"
         case .venuePulse: "mappin.and.ellipse"
         case .tagged: "person.crop.circle.badge.plus"
+        case .commentTagged: "at.circle.fill"
         case .sharedMoment: "person.2.fill"
         case .comment: "ellipsis.message.fill"
         case .photoReply: "photo.on.rectangle.angled"
         case .reaction: "heart.fill"
+        case .commentLike: "heart.text.square.fill"
         case .nearby: "location.fill"
+        case .nightRecap: "photo.stack.fill"
         case .friendRequest: "person.badge.plus"
         case .friendAccepted: "checkmark.seal.fill"
+        case .profileVerified: "checkmark.seal.fill"
+        case .announcement: "megaphone.fill"
         case .groupAdded: "person.3.fill"
         }
     }
+
 }
 
 enum CameraCaptureMode: String {
@@ -270,7 +348,37 @@ struct UserProfile: Identifiable, Hashable, Codable {
     var displayName: String
     var username: String
     var avatar: AvatarStyle
+    var backgroundTheme: BackgroundTheme?
     var isCloseFriend: Bool
+    var isVerified: Bool
+    var isBanned: Bool
+
+    init(
+        id: UUID,
+        displayName: String,
+        username: String,
+        avatar: AvatarStyle,
+        backgroundTheme: BackgroundTheme? = nil,
+        isCloseFriend: Bool,
+        isVerified: Bool = false,
+        isBanned: Bool = false
+    ) {
+        self.id = id
+        self.displayName = displayName
+        self.username = username
+        self.avatar = avatar
+        self.backgroundTheme = backgroundTheme
+        self.isCloseFriend = isCloseFriend
+        self.isVerified = isVerified
+        self.isBanned = isBanned
+    }
+
+    var normalizedUsername: String {
+        username
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "@"))
+            .lowercased()
+    }
 
     static let placeholderCurrentUser = UserProfile(
         id: UUID(uuidString: "00000000-0000-0000-0000-000000000001") ?? UUID(),
@@ -285,6 +393,46 @@ struct UserProfile: Identifiable, Hashable, Codable {
     )
 }
 
+extension UserProfile {
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case displayName
+        case username
+        case avatar
+        case backgroundTheme
+        case isCloseFriend
+        case isVerified
+        case isBanned
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let id = try container.decode(UUID.self, forKey: .id)
+        let displayName = try container.decode(String.self, forKey: .displayName)
+        let username = try container.decode(String.self, forKey: .username)
+        let avatar = try container.decode(AvatarStyle.self, forKey: .avatar)
+        let backgroundTheme = try? container.decodeIfPresent(BackgroundTheme.self, forKey: .backgroundTheme)
+        let isCloseFriend = try container.decode(Bool.self, forKey: .isCloseFriend)
+        self.init(
+            id: id,
+            displayName: displayName,
+            username: username,
+            avatar: avatar,
+            backgroundTheme: backgroundTheme ?? nil,
+            isCloseFriend: isCloseFriend,
+            isVerified: (try? container.decodeIfPresent(Bool.self, forKey: .isVerified)) ?? false,
+            isBanned: (try? container.decodeIfPresent(Bool.self, forKey: .isBanned)) ?? false
+        )
+    }
+
+    private static func normalizedUsername(_ username: String) -> String {
+        username
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "@"))
+            .lowercased()
+    }
+}
+
 struct DrinkTag: Identifiable, Hashable, Codable {
     let id: UUID
     var name: String
@@ -296,6 +444,10 @@ struct DrinkTag: Identifiable, Hashable, Codable {
     /// Allows per-drink custom PNGs/JPEGs (beer photo, shot glass, etc.)
     /// without changing the symbol string used for backward-compat persistence.
     var imageName: String?
+    /// When set, renders an emoji character instead of the SF Symbol or image.
+    /// Takes precedence over imageName. Nil for custom user-added drinks,
+    /// which fall back to the SF Symbol.
+    var emoji: String?
 
     init(
         id: UUID,
@@ -303,6 +455,7 @@ struct DrinkTag: Identifiable, Hashable, Codable {
         subtitle: String,
         symbol: String,
         imageName: String? = nil,
+        emoji: String? = nil,
         primaryHex: String,
         secondaryHex: String
     ) {
@@ -311,6 +464,7 @@ struct DrinkTag: Identifiable, Hashable, Codable {
         self.subtitle = subtitle
         self.symbol = symbol
         self.imageName = imageName
+        self.emoji = emoji
         self.primaryHex = primaryHex
         self.secondaryHex = secondaryHex
     }
@@ -325,6 +479,158 @@ struct DrinkTag: Identifiable, Hashable, Codable {
         if lower == "beer" { return "DrinkBeer" }
         if lower.hasSuffix("shot") { return "DrinkShotglass" }
         if lower.contains("everclear") || lower.contains("rumple") { return "DrinkShotglass" }
+        return nil
+    }
+
+    /// Resolves an emoji for a drink by name. Checks exact catalog names first,
+    /// then falls back to keyword matching so custom drinks like "Custom Water"
+    /// or "Mango Energy Drink" resolve automatically without a picker.
+    static func resolvedEmoji(for name: String) -> String? {
+        let lower = name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Exact matches for seed catalog drinks.
+        switch lower {
+        case "beer":                return "🍺"
+        case "wine":                return "🍷"
+        case "vodka cranberry":     return "🍹"
+        case "seltzer":             return "🫧"
+        case "margarita":           return "🍸"
+        case "lemon drop shot":     return "🍋"
+        case "espresso martini":    return "☕"
+        case "drunk cig":           return "🚬"
+        case "everclear shot":      return "⚡"
+        case "rumple shot":         return "🌿"
+        default:                    break
+        }
+
+        // Keyword rules evaluated in priority order — most specific first.
+        // Each rule is a set of keywords that must ALL be present, paired
+        // with the emoji to return when they match.
+        let rules: [(keywords: [String], emoji: String)] = [
+            // Specific cocktails / mixed drinks
+            (["espresso", "martini"],           "☕"),
+            (["lemon", "drop"],                 "🍋"),
+            (["vodka", "cranberry"],            "🍹"),
+            (["vodka", "soda"],                 "🫧"),
+            (["vodka", "red bull"],             "⚡"),
+            (["rum", "coke"],                   "🥤"),
+            (["gin", "tonic"],                  "🍸"),
+            (["moscow", "mule"],                "🍺"),
+            (["whiskey", "sour"],               "🥃"),
+            (["long island"],                   "🍹"),
+            (["jungle juice"],                  "🍹"),
+            (["hard lemonade"],                 "🍋"),
+            (["hard seltzer"],                  "🫧"),
+            (["white claw"],                    "🫧"),
+            (["truly"],                         "🫧"),
+            (["twisted tea"],                   "🍵"),
+            (["four loko"],                     "⚡"),
+            (["red bull"],                      "⚡"),
+            (["monster"],                       "⚡"),
+            (["celsius"],                       "⚡"),
+            (["pre-workout"],                   "⚡"),
+            (["pre workout"],                   "⚡"),
+            (["energy"],                        "⚡"),
+            (["mimosa"],                        "🥂"),
+            (["champagne"],                     "🥂"),
+            (["prosecco"],                      "🥂"),
+            (["sangria"],                       "🍷"),
+            (["rosé"],                          "🍷"),
+            (["rose wine"],                     "🍷"),
+            (["red wine"],                      "🍷"),
+            (["white wine"],                    "🍷"),
+            (["wine"],                          "🍷"),
+            (["tequila", "shot"],               "🍋"),
+            (["tequila"],                       "🍸"),
+            (["mezcal"],                        "🍸"),
+            (["margarita"],                     "🍸"),
+            (["daiquiri"],                      "🍸"),
+            (["cosmopolitan"],                  "🍸"),
+            (["cosmo"],                         "🍸"),
+            (["mojito"],                        "🍸"),
+            (["pina colada"],                   "🍹"),
+            (["piña colada"],                   "🍹"),
+            (["mai tai"],                       "🍹"),
+            (["tropical"],                      "🍹"),
+            (["punch"],                         "🍹"),
+            (["paloma"],                        "🍹"),
+            (["aperol"],                        "🍊"),
+            (["negroni"],                       "🍊"),
+            (["old fashioned"],                 "🥃"),
+            (["manhattan"],                     "🥃"),
+            (["bourbon"],                       "🥃"),
+            (["whiskey"],                       "🥃"),
+            (["whisky"],                        "🥃"),
+            (["scotch"],                        "🥃"),
+            (["brandy"],                        "🥃"),
+            (["cognac"],                        "🥃"),
+            (["rum"],                           "🥃"),
+            (["gin"],                           "🍸"),
+            (["vodka"],                         "🍸"),
+            (["shot"],                          "🥃"),
+            (["beer"],                          "🍺"),
+            (["lager"],                         "🍺"),
+            (["ale"],                           "🍺"),
+            (["ipa"],                           "🍺"),
+            (["stout"],                         "🍺"),
+            (["pilsner"],                       "🍺"),
+            (["cider"],                         "🍺"),
+            (["dos equis"],                     "🍺"),
+            (["corona"],                        "🍺"),
+            (["modelo"],                        "🍺"),
+            (["heineken"],                      "🍺"),
+            (["budweiser"],                     "🍺"),
+            (["bud light"],                     "🍺"),
+            (["miller"],                        "🍺"),
+            (["coors"],                         "🍺"),
+            (["stella"],                        "🍺"),
+            (["guinness"],                      "🍺"),
+            (["seltz"],                         "🫧"),
+            (["sparkling"],                     "🫧"),
+            (["kombucha"],                      "🫧"),
+            // Non-alcoholic / misc
+            (["coffee"],                        "☕"),
+            (["espresso"],                      "☕"),
+            (["latte"],                         "☕"),
+            (["cappuccino"],                    "☕"),
+            (["matcha"],                        "🍵"),
+            (["tea"],                           "🍵"),
+            (["boba"],                          "🧋"),
+            (["bubble tea"],                    "🧋"),
+            (["smoothie"],                      "🥤"),
+            (["juice"],                         "🧃"),
+            (["lemonade"],                      "🍋"),
+            (["water"],                         "💧"),
+            (["soda"],                          "🥤"),
+            (["coke"],                          "🥤"),
+            (["pepsi"],                         "🥤"),
+            (["sprite"],                        "🥤"),
+            (["gatorade"],                      "🥤"),
+            (["powerade"],                      "🥤"),
+            (["milk"],                          "🥛"),
+            (["cig"],                           "🚬"),
+            (["cigarette"],                     "🚬"),
+            (["smoke"],                         "🚬"),
+            // Cannabis
+            (["edible"],                        "🍃"),
+            (["weed"],                          "🍃"),
+            (["cannabis"],                      "🍃"),
+            (["marijuana"],                     "🍃"),
+            (["joint"],                         "🍃"),
+            (["blunt"],                         "🍃"),
+            (["bong"],                          "🍃"),
+            (["dab"],                           "🍃"),
+            (["vape"],                          "🍃"),
+            (["gummy"],                         "🍃"),
+            (["thc"],                           "🍃"),
+        ]
+
+        for rule in rules {
+            if rule.keywords.allSatisfy({ lower.contains($0) }) {
+                return rule.emoji
+            }
+        }
+
         return nil
     }
 }
@@ -406,15 +712,9 @@ struct ReactionSummary: Hashable, Codable {
 
 struct EmailPasswordAuthDraft: Hashable {
     var mode: AuthEntryMode = .signUp
-    var email: String = ""
+    var identifier: String = ""
     var password: String = ""
     var isSubmitting = false
-}
-
-struct ContactLookupSeed: Hashable {
-    var displayName: String
-    var emailHashes: [String] = []
-    var phoneHashes: [String] = []
 }
 
 struct OutboundNotificationDelivery: Identifiable, Hashable {
@@ -442,7 +742,7 @@ struct MomentMedia: Hashable, Codable {
 struct MomentPost: Identifiable, Hashable, Codable {
     let id: UUID
     var author: UserProfile
-    var drink: DrinkTag
+    var drink: DrinkTag?
     var venue: Venue?
     var location: LocationSnapshot? = nil
     var caption: String
@@ -463,6 +763,8 @@ struct MomentPost: Identifiable, Hashable, Codable {
     var presenceNote: String?
     var connectionPath: String?
     var contextReason: String?
+    /// Optional so caches written before Local remain decodable.
+    var isSharedLocally: Bool? = nil
 
     var resolvedCoordinate: CLLocationCoordinate2D? {
         location?.coordinate ?? venue?.coordinate
@@ -488,6 +790,18 @@ struct AppNotification: Identifiable, Hashable {
     var actor: UserProfile? = nil
     var postID: UUID? = nil
     var commentID: UUID? = nil
+    var nightStart: Date? = nil
+    var nightEnd: Date? = nil
+    var nightGroupID: UUID? = nil
+
+    var headline: String { headline(at: .now) }
+
+    func headline(at date: Date) -> String {
+        if kind == .nightRecap {
+            return NotificationDates.recapTitle(start: nightStart, end: nightEnd, now: date)
+        }
+        return NotificationCopy.headline(kind: kind.rawValue, title: title)
+    }
 }
 
 struct VenueActivity: Identifiable, Hashable {
@@ -541,7 +855,6 @@ struct PresenceSignal: Identifiable, Hashable {
 
 struct WeeklyRecap: Hashable {
     var momentsPosted: Int
-    var favoriteDrink: DrinkTag
     var commonVenue: Venue?
     var nightsActive: Int
     var totalInteractions: Int
@@ -559,39 +872,116 @@ struct FriendRequest: Identifiable, Hashable {
     var createdAt: Date
 }
 
+struct AppAnnouncement: Identifiable, Hashable {
+    let id: UUID
+    var title: String
+    var message: String
+    var imageUrl: URL?
+    var createdAt: Date
+}
+
+enum AppAnnouncementAudience: String, CaseIterable, Identifiable, Hashable {
+    case all
+    case verified
+    case selected
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all: "All"
+        case .verified: "Verified"
+        case .selected: "Selected"
+        }
+    }
+
+    var adminSummary: String {
+        switch self {
+        case .all: "All users"
+        case .verified: "Verified users"
+        case .selected: "Selected users"
+        }
+    }
+}
+
+enum AppAnnouncementDelivery: String, CaseIterable, Identifiable, Hashable {
+    case inApp = "in_app"
+    case push
+    case both
+
+    var id: String { rawValue }
+    var includesPush: Bool { self != .inApp }
+    var includesInApp: Bool { self != .push }
+
+    var title: String {
+        switch self {
+        case .inApp: "In-App"
+        case .push: "Push"
+        case .both: "Both"
+        }
+    }
+
+    var explanation: String {
+        switch self {
+        case .inApp: "Shows a pop-up when users open Out Again."
+        case .push: "Sends to phones with notifications and Announcements enabled."
+        case .both: "Shows an in-app pop-up and sends a push to phones with Announcements enabled."
+        }
+    }
+}
+
+struct AdminAppAnnouncement: Identifiable, Hashable {
+    let id: UUID
+    var title: String
+    var message: String
+    var audience: AppAnnouncementAudience
+    var targetUsernames: [String]
+    var recipientCount: Int
+    var isActive: Bool
+    var createdAt: Date
+    var delivery: AppAnnouncementDelivery = .inApp
+    var pushRecipientCount: Int = 0
+    var pushAcceptedCount: Int = 0
+    var pushFailureCount: Int = 0
+    var pushSkippedCount: Int = 0
+    var pushPendingCount: Int = 0
+
+    var audienceDescription: String {
+        switch audience {
+        case .all:
+            return "All users"
+        case .verified:
+            return "Verified users"
+        case .selected:
+            guard !targetUsernames.isEmpty else { return "Selected users" }
+            return targetUsernames.map { "@\($0)" }.joined(separator: ", ")
+        }
+    }
+}
+
 struct SocialBootstrap: Hashable {
     var viewer: UserProfile?
     var drinkCatalogPreferences = DrinkCatalogPreferences()
     var friends: [UserProfile]
     var suggestedFriends: [UserProfile]
+    var homeFeedHasMore = false
     var friendOfFriendIDs: Set<UUID> = []
+    /// Mutual friend count for each FoF candidate, keyed by their user ID.
+    /// Used to display "1 mutual", "2 mutuals", etc. in the suggested friends UI.
+    var mutualCounts: [UUID: Int] = [:]
     var incomingRequests: [FriendRequest] = []
     var outgoingRequests: [FriendRequest] = []
     var blockedUserIDs: Set<UUID> = []
     var blockedUsers: [UserProfile] = []
     var posts: [MomentPost]
+    var tonightActivityPosts: [MomentPost] = []
+    var nightSummaryPosts: [MomentPost] = []
+    var tonightActivitySnapshotIsAuthoritative = false
+    var nightSummarySnapshotIsAuthoritative = false
+    var nightSummaryGroups: [NightGroup] = []
     var notifications: [AppNotification]
-}
-
-struct NotificationPreferences: Codable, Hashable {
-    // Kept to 1:1 the kinds the backend actually emits:
-    //   friendRequests  -> notify_on_friend_request   (incl. accepts)
-    //   friendPosts     -> notify_on_post             (fan-out to friends)
-    //   commentsAndReplies -> comment trigger on posts
-    //   likesAndReactions  -> reaction trigger on posts
-    // No `nearbyActivity` toggle until a server-side nearby trigger exists —
-    // exposing a toggle that controls nothing is worse than hiding the lever.
-    var friendRequests = true
-    var friendPosts = true
-    var commentsAndReplies = true
-    var likesAndReactions = true
-
-    enum CodingKeys: String, CodingKey {
-        case friendRequests
-        case friendPosts = "friendMoments" // preserve existing UserDefaults key
-        case commentsAndReplies
-        case likesAndReactions
-    }
+    var appAnnouncements: [AppAnnouncement] = []
+    var appConfig: [String: String] = [:]
 }
 
 struct DrinkCatalogPreferences: Codable, Hashable {
@@ -602,11 +992,6 @@ struct DrinkCatalogPreferences: Codable, Hashable {
     var isEmpty: Bool {
         customDrinks.isEmpty && deletedDrinkNames.isEmpty && orderedDrinkNames.isEmpty
     }
-}
-
-struct LiveActivityPreferences: Codable, Hashable {
-    var isEnabled = false
-    var lastPromptedDayKey: String?
 }
 
 struct ProfileEditorDraft: Hashable {
@@ -651,10 +1036,14 @@ struct NightGroup: Identifiable, Hashable, Codable {
 }
 
 struct PostDraft {
+    var id = UUID()
+    var shareLocally = false
+    static let captionCharacterLimit = 120
+
     var capturedPhotoData: Data? = nil
-    /// All drinks the viewer has selected for this post, in selection order.
-    /// The first element is the "primary" drink used for post metadata and
-    /// background color; additional drinks are displayed as co-selected pills.
+    /// The currently selected drink for this post.
+    /// Stored as an array for compatibility with older draft code, but the
+    /// composer now keeps at most one selected drink ID at a time.
     var selectedDrinkIDs: [UUID] = []
     var selectedVenueID: UUID? = nil
     var location: LocationSnapshot? = nil
@@ -664,4 +1053,8 @@ struct PostDraft {
     var sampleSymbol: String = "camera.aperture"
     var lensMode: CameraCaptureMode = .back
     var isUsingSampleCapture: Bool = false
+
+    static func limitedCaption(_ caption: String) -> String {
+        String(caption.prefix(captionCharacterLimit))
+    }
 }

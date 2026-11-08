@@ -1,6 +1,17 @@
 import Foundation
 
 extension AppStore {
+    func registerPasskey() async throws { try await backend.registerPasskey() }
+    func listPasskeys() async throws -> [AccountPasskey] { try await backend.listPasskeys() }
+    func deletePasskey(id: UUID) async throws { try await backend.deletePasskey(id: id) }
+
+    func changePassword(currentPassword: String, newPassword: String) async throws {
+        try await backend.changePassword(
+            currentPassword: currentPassword,
+            newPassword: newPassword
+        )
+    }
+
     func deleteCurrentAccount() async throws {
         try await backend.deleteCurrentAccount()
         finishSessionEndedLocally()
@@ -12,9 +23,7 @@ extension AppStore {
                 target: .post,
                 postID: post.id,
                 commentID: nil,
-                targetAuthorID: post.author.id,
-                targetAuthorUsername: moderationUsername(for: post.author),
-                targetExcerpt: moderationExcerpt(for: post)
+                targetUserID: nil
             )
         )
     }
@@ -29,47 +38,8 @@ extension AppStore {
                 target: .comment,
                 postID: postID,
                 commentID: comment.id,
-                targetAuthorID: comment.author.id,
-                targetAuthorUsername: moderationUsername(for: comment.author),
-                targetExcerpt: moderationExcerpt(for: comment)
+                targetUserID: nil
             )
         )
-    }
-
-    private func moderationUsername(for profile: UserProfile) -> String {
-        let handle = profile.username.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !handle.isEmpty {
-            return handle
-        }
-        return profile.displayName
-    }
-
-    private func moderationExcerpt(for post: MomentPost) -> String {
-        let caption = post.caption.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !caption.isEmpty {
-            return caption
-        }
-
-        if let venueName = post.venue?.name, !venueName.isEmpty {
-            return "\(post.drink.name) at \(venueName)"
-        }
-
-        return post.drink.name
-    }
-
-    private func moderationExcerpt(for comment: Comment) -> String {
-        let body = comment.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !body.isEmpty {
-            return body
-        }
-
-        switch comment.kind {
-        case .text:
-            return "(empty comment)"
-        case .photo:
-            return "[Photo comment]"
-        case .gif:
-            return "[GIF comment]"
-        }
     }
 }

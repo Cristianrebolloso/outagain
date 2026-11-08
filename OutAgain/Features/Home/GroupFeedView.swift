@@ -22,208 +22,233 @@ struct GroupFeedView: View {
         return trimmed.isEmpty ? "Group" : trimmed
     }
 
+    private let contentHorizontalPadding: CGFloat = 16
     private var posts: [MomentPost] { store.groupPosts(for: liveGroup) }
     private var members: [UserProfile] { store.groupMembers(for: liveGroup) }
     private var totalPostCount: Int { posts.count }
 
-    /// Aggregated drink counts across all member posts tonight, highest first.
-    private var groupDrinkCounts: [(drink: DrinkTag, count: Int)] {
-        var seen: [String: (drink: DrinkTag, count: Int)] = [:]
+    /// Aggregated drink recap across all member posts tonight. Keeps the
+    /// first-seen order from newest posts, so the freshest drinks stay high.
+    private var groupDrinkSummaries: [GroupDrinkSummary] {
+        var seen: [String: GroupDrinkSummary] = [:]
         var order: [String] = []
+
         for post in posts {
-            let key = post.drink.name
-            if seen[key] == nil {
-                seen[key] = (post.drink, 0)
+            guard let drink = post.drink else { continue }
+            let key = AppStore.normalizedDrinkName(drink.name)
+
+            if var summary = seen[key] {
+                summary.count += 1
+                summary.authorIDs.insert(post.author.id)
+                seen[key] = summary
+            } else {
+                seen[key] = GroupDrinkSummary(
+                    id: key,
+                    drink: drink,
+                    count: 1,
+                    latestPostDate: post.createdAt,
+                    authorIDs: [post.author.id]
+                )
                 order.append(key)
             }
-            seen[key]!.count += 1
         }
-        return order.compactMap { seen[$0] }.sorted { $0.count > $1.count }
+
+        return order.compactMap { seen[$0] }
+    }
+
+    private var latestPostDate: Date? {
+        posts.first?.createdAt
+    }
+
+    private var activeMemberIDs: Set<UUID> {
+        Set(posts.map(\.author.id))
+    }
+
+    private var activeMemberCount: Int {
+        activeMemberIDs.count
+    }
+
+    private var groupDrinkTitle: String {
+        "\(possessiveName(navTitle)) drinks"
+    }
+
+    private var groupNightTitle: String {
+        "\(navTitle) tonight"
+    }
+
+    private var groupNightSubtitle: String {
+        guard totalPostCount > 0 else {
+            return "Waiting for the first post"
+        }
+
+        return activeMemberCount == 0
+            ? "no active members"
+            : "\(ActivityNightText.memberCountLabel(activeMemberCount)) active"
+    }
+
+    private var drinkListItems: [ActivityDrinkListItem] {
+        groupDrinkSummaries.map { summary in
+            let memberCount = summary.authorIDs.count
+            let detail = memberCount > 0 ? ActivityNightText.memberCountLabel(memberCount) : nil
+
+            return ActivityDrinkListItem(
+                id: summary.id,
+                drink: summary.drink,
+                count: summary.count,
+                detail: detail
+            )
+        }
     }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    // Drinks first — same position as individual feed
-                    if !groupDrinkCounts.isEmpty {
-                        drinkSummary
-                    }
-                    memberRoster
-                    postCountHeader
+                    groupRecap
                     feedContent
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
+                .padding(.horizontal, contentHorizontalPadding)
+                .padding(.top, store.isDuoDevice ? 12 : 36)
                 .padding(.bottom, 40)
+                .modifier(PostDetailColumn())
             }
             .scrollIndicators(.hidden)
             .scrollContentBackground(.hidden)
-            .background(AmbientBackground())
-            .navigationTitle(navTitle)
+            .modifier(MainPageSurface())
+            .navigationTitle(store.isDuoDevice ? navTitle : "")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(.hidden, for: .navigationBar)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    deleteGroupButton
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    HStack(spacing: 14) {
-                        Button("Edit") { isEditing = true }
-                            .font(.body.weight(.medium))
-                            .foregroundStyle(AppTheme.softText)
-
-                        Button("Done") { dismiss() }
-                            .font(.body.weight(.semibold))
-                            .foregroundStyle(accent)
+                if store.isDuoDevice {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Close group", systemImage: "xmark") { dismiss() }
                     }
                 }
             }
+            .navigationDestination(item: $profileTarget) { profile in
+                FriendProfileView(profile: profile, presentationStyle: .embedded)
+            }
+            .navigationDestination(isPresented: Binding(
+                get: { store.isDuoDevice && isEditing },
+                set: { isEditing = $0 }
+            )) {
+                GroupEditSheet(group: liveGroup, isEmbedded: true)
+            }
+            .navigationDestination(item: Binding(
+                get: { store.isDuoDevice ? commentPost : nil },
+                set: { commentPost = $0 }
+            )) { post in
+                CommentThreadSheet(postID: post.id, initialPost: post, isEmbedded: true)
+                    .modifier(MainPageSurface())
+                    .navigationTitle("Comments")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbarBackground(.hidden, for: .navigationBar)
+            }
         }
-        .sheet(item: $commentPost) { post in
-            CommentThreadSheet(postID: post.id)
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
+        .modifier(DuoSheetSurface())
+        .modifier(PostDetailPresentation())
+        .sheet(item: Binding(
+            get: { store.isDuoDevice ? nil : commentPost },
+            set: { commentPost = $0 }
+        )) { post in
+            CommentThreadSheet(postID: post.id, initialPost: post)
+                .presentationDetents([.fraction(0.6), .large])
+                .appSheetDragHandle()
         }
-        .sheet(item: $profileTarget) { profile in
-            FriendProfileView(profile: profile)
-                .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
-        }
-        .sheet(isPresented: $isEditing) {
+        .sheet(isPresented: Binding(
+            get: { !store.isDuoDevice && isEditing },
+            set: { isEditing = $0 }
+        )) {
             GroupEditSheet(group: liveGroup)
                 .environment(store)
                 .environment(\.appAccent, accent)
                 .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
+                .appSheetDragHandle()
         }
-        .confirmationDialog(
+        .alert(
             "Delete this group?",
             isPresented: $isConfirmingDeleteGroup,
-            titleVisibility: .visible
-        ) {
+            actions: {
             Button("Delete group", role: .destructive) {
-                store.deleteGroup(group.id)
+                store.deleteGroup(liveGroup.id)
                 dismiss()
             }
             Button("Cancel", role: .cancel) {}
-        } message: {
+                .tint(.blue)
+        }, message: {
             Text("Are you sure you want to delete this group? This removes it for every member.")
-        }
+        })
     }
 
-    // MARK: - Drinks summary (mirrors TonightAuthorSheet exactly)
+    // MARK: - Group recap
 
-    private var drinkSummary: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Tonight's drinks")
-                .font(.system(.caption, design: .rounded, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.55))
-                .tracking(1.1)
-                .textCase(.uppercase)
+    private var groupRecap: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ActivityNightOverviewCard(
+                title: groupNightTitle,
+                subtitle: groupNightSubtitle,
+                value: "\(totalPostCount)",
+                unit: totalPostCount == 1 ? "post" : "posts",
+                stats: [
+                    ActivityNightOverviewStat(
+                        symbol: "play.fill",
+                        title: "Started",
+                        value: ActivityNightText.startedTimeLabel(for: posts),
+                        tint: AppTheme.barLightGreen
+                    ),
+                    ActivityNightOverviewStat(
+                        symbol: "clock.fill",
+                        title: "Latest",
+                        value: ActivityNightText.latestTimeLabel(latestPostDate),
+                        tint: AppTheme.barLightBlue
+                    )
+                ],
+                tint: accent
+            )
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(groupDrinkCounts, id: \.drink.id) { entry in
-                        HStack(spacing: 6) {
-                            DrinkIconView(drink: entry.drink, size: 22)
-                            Text(entry.count > 1
-                                 ? "\(entry.count) \(pluralized(entry.drink.name))"
-                                 : entry.drink.name)
-                                .font(.system(size: 14, weight: .semibold, design: .rounded))
-                                .foregroundStyle(.white)
-                                .lineLimit(1)
-                        }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .background(.white.opacity(0.08), in: Capsule())
-                        .overlay(Capsule().strokeBorder(.white.opacity(0.14), lineWidth: 1))
-                    }
+            ActivityDrinkListCard(
+                title: groupDrinkTitle,
+                items: drinkListItems,
+                tint: AppTheme.barLightGreen
+            )
+
+            HStack(spacing: 10) {
+                Button {
+                    isEditing = true
+                } label: {
+                    Label("Edit group", systemImage: "pencil")
+                        .font(AppTypography.button)
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .contentShape(Capsule())
+                .primaryGlass(in: .capsule, interactive: true)
+
+                if isCreator {
+                    groupActionsMenu
                 }
             }
-            .scrollIndicators(.hidden)
         }
     }
 
-    // MARK: - Member roster (unpanelled, strip-style tiles)
-
-    private var memberRoster: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Members")
-                .font(.system(.caption, design: .rounded, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.55))
-                .tracking(1.1)
-                .textCase(.uppercase)
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 16) {
-                    ForEach(members) { member in
-                        memberTile(member)
-                    }
-                }
-                .padding(.horizontal, 2)
-                .padding(.vertical, 4)
+    private var groupActionsMenu: some View {
+        Menu {
+            Button(role: .destructive) {
+                isConfirmingDeleteGroup = true
+            } label: {
+                Label("Delete Group", systemImage: "trash")
             }
-            .scrollIndicators(.hidden)
-        }
-    }
-
-    private func memberTile(_ member: UserProfile) -> some View {
-        let postCount = posts.filter { $0.author.id == member.id }.count
-        let isViewer = member.id == store.viewer?.id
-
-        return Button {
-            if !isViewer { profileTarget = member }
         } label: {
-            VStack(spacing: 6) {
-                ZStack {
-                    Circle()
-                        .strokeBorder(postCount > 0 ? accent : AppTheme.line,
-                                      lineWidth: postCount > 0 ? 2 : 1)
-                        .frame(width: 54, height: 54)
-                    AvatarView(avatar: member.avatar, size: 48)
-                        .opacity(postCount > 0 ? 1 : 0.55)
-                }
-                .overlay(alignment: .bottom) {
-                    if postCount > 0 {
-                        Text("\(postCount)")
-                            .font(.system(size: 11, weight: .bold, design: .rounded))
-                            .foregroundStyle(.black)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 2)
-                            .background(accent, in: Capsule())
-                            .overlay(Capsule().strokeBorder(Color.black.opacity(0.2), lineWidth: 0.5))
-                            .offset(y: 9)
-                    }
-                }
-                .padding(.bottom, postCount > 0 ? 9 : 0)
-
-                Text(isViewer ? "You" : (member.displayName.components(separatedBy: " ").first ?? member.displayName))
-                    .font(.system(.caption2, design: .rounded, weight: .semibold))
-                    .foregroundStyle(postCount > 0 ? .white : AppTheme.softText)
-                    .lineLimit(1)
-                    .frame(maxWidth: 60)
-            }
-            .frame(width: 64)
+            Image(systemName: "ellipsis")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 44, height: 44)
+                .contentShape(Circle())
+                .primaryGlass(in: .circle, interactive: true)
         }
-        .buttonStyle(.plain)
-    }
-
-    // MARK: - Post count header
-
-    @ViewBuilder
-    private var postCountHeader: some View {
-        if totalPostCount > 0 {
-            HStack(spacing: 8) {
-                Text("\(totalPostCount)")
-                    .font(.system(size: 32, weight: .bold, design: .rounded))
-                    .foregroundStyle(accent)
-                Text(totalPostCount == 1 ? "post tonight" : "posts tonight")
-                    .font(.system(.title3, design: .rounded, weight: .semibold))
-                    .foregroundStyle(.white)
-                Spacer()
-            }
-            .padding(.horizontal, 4)
-        }
+        .accessibilityLabel("Group actions")
     }
 
     // MARK: - Feed
@@ -233,7 +258,6 @@ struct GroupFeedView: View {
         if posts.isEmpty {
             EmptyStateCard(
                 title: "Nothing posted yet",
-                detail: "When anyone in this group posts tonight, it'll show up here.",
                 symbol: "moon.stars.fill"
             )
             .padding(.top, 16)
@@ -253,32 +277,33 @@ struct GroupFeedView: View {
                             }
                         }
                     )
+                    .padding(.horizontal, -contentHorizontalPadding)
                 }
             }
         }
     }
 
-    private func pluralized(_ name: String) -> String {
-        name.lowercased().hasSuffix("s") ? name : "\(name)s"
-    }
-
-    // MARK: - Delete (creator only)
-
     private var isCreator: Bool {
         liveGroup.creatorID == store.viewer?.id
     }
 
-    @ViewBuilder
-    private var deleteGroupButton: some View {
-        if isCreator {
-            Button {
-                isConfirmingDeleteGroup = true
-            } label: {
-                Image(systemName: "trash")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(AppTheme.softText)
-            }
+    private func possessiveName(_ name: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "Group's" }
+
+        if trimmed.lowercased().hasSuffix("s") {
+            return "\(trimmed)'"
         }
+
+        return "\(trimmed)'s"
+    }
+
+    private struct GroupDrinkSummary: Identifiable {
+        let id: String
+        let drink: DrinkTag
+        var count: Int
+        let latestPostDate: Date
+        var authorIDs: Set<UUID>
     }
 
 }
@@ -294,6 +319,7 @@ private struct GroupEditSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     let group: NightGroup
+    let isEmbedded: Bool
 
     @State private var selectedFriendIDs: Set<UUID>
     @State private var groupName: String
@@ -302,8 +328,9 @@ private struct GroupEditSheet: View {
     @FocusState private var isNameFocused: Bool
     @FocusState private var isSearchFocused: Bool
 
-    init(group: NightGroup) {
+    init(group: NightGroup, isEmbedded: Bool = false) {
         self.group = group
+        self.isEmbedded = isEmbedded
         // Pre-populate with existing non-viewer members
         _groupName = State(initialValue: group.name)
         _selectedFriendIDs = State(initialValue: Set(group.memberIDs))
@@ -312,19 +339,36 @@ private struct GroupEditSheet: View {
     /// Friends not already the viewer, shown for selection.
     private var displayedFriends: [UserProfile] {
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let pool = query.isEmpty ? Array(store.friends.prefix(5)) : store.friends.filter {
+        let pool = query.isEmpty ? store.friends : store.friends.filter {
             $0.displayName.lowercased().contains(query) ||
             $0.username.lowercased().contains(query)
         }
         return pool
     }
 
+    private var friendListViewportHeight: CGFloat {
+        let visibleRows = min(displayedFriends.count, GroupEditLayout.visibleFriendRows)
+        guard visibleRows > 0 else { return 0 }
+        let dividerCount = max(visibleRows - 1, 0)
+        return CGFloat(visibleRows) * GroupEditLayout.friendRowHeight
+            + CGFloat(dividerCount) * GroupEditLayout.dividerHeight
+    }
+
     private var isCreator: Bool {
         group.creatorID == store.viewer?.id
     }
 
+    @ViewBuilder
     var body: some View {
-        NavigationStack {
+        if isEmbedded {
+            editor
+                .navigationBarBackButtonHidden()
+        } else {
+            NavigationStack { editor }
+        }
+    }
+
+    private var editor: some View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     // Any member can add more friends to the group.
@@ -340,23 +384,29 @@ private struct GroupEditSheet: View {
             .scrollIndicators(.hidden)
             .scrollContentBackground(.hidden)
             .background(AmbientBackground())
-            .navigationTitle("Edit Group")
-            .navigationBarTitleDisplayMode(.inline)
+            .appSecondaryPageNavigation(title: "Edit Group")
+            .scrollDismissesKeyboard(.interactively)
+            .safeAreaPadding(.bottom, store.isDuoDevice && isNameFocused ? 20 : 0)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Cancel") { dismiss() }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button { dismiss() } label: {
+                        if store.isDuoDevice { Label("Cancel", systemImage: "xmark") }
+                        else { Text("Cancel") }
+                    }
                         .foregroundStyle(AppTheme.softText)
                 }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Save") {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
                         Task { await saveEdits() }
+                    } label: {
+                        if store.isDuoDevice { Label("Save", systemImage: "checkmark") }
+                        else { Text("Save") }
                     }
-                        .font(.body.weight(.bold))
+                        .font(AppTypography.button)
                         .foregroundStyle(isSaving ? AppTheme.softText : accent)
                         .disabled(isSaving)
                 }
             }
-        }
     }
 
     // MARK: - Friend picker
@@ -364,7 +414,7 @@ private struct GroupEditSheet: View {
     private var friendPicker: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Add friends")
-                .font(.system(size: 28, weight: .bold, design: .serif))
+                .font(AppTypography.sectionTitle)
                 .foregroundStyle(.white)
 
             if store.friends.isEmpty {
@@ -374,7 +424,7 @@ private struct GroupEditSheet: View {
                             .font(.system(size: 18))
                             .foregroundStyle(AppTheme.softText)
                         Text("Add friends first to create a group.")
-                            .font(.system(.subheadline, design: .rounded))
+                            .font(AppTypography.rowSubtitle)
                             .foregroundStyle(AppTheme.softText)
                     }
                 }
@@ -392,22 +442,29 @@ private struct GroupEditSheet: View {
                         if displayedFriends.isEmpty {
                             HStack {
                                 Text("No friends match \"\(searchQuery)\"")
-                                    .font(.system(.subheadline, design: .rounded))
+                                    .font(AppTypography.rowSubtitle)
                                     .foregroundStyle(AppTheme.softText)
                                 Spacer()
                             }
                             .padding(.horizontal, 16)
                             .padding(.vertical, 14)
                         } else {
-                            ForEach(displayedFriends) { friend in
-                                friendRow(friend)
+                            ScrollView {
+                                LazyVStack(spacing: 0) {
+                                    ForEach(displayedFriends) { friend in
+                                        friendRow(friend)
 
-                                if friend.id != displayedFriends.last?.id {
-                                    Divider()
-                                        .overlay(AppTheme.line)
-                                        .padding(.leading, 66)
+                                        if friend.id != displayedFriends.last?.id {
+                                            Divider()
+                                                .overlay(AppTheme.line)
+                                                .padding(.leading, 66)
+                                        }
+                                    }
                                 }
                             }
+                            .frame(height: friendListViewportHeight)
+                            .scrollDisabled(displayedFriends.count <= GroupEditLayout.visibleFriendRows)
+                            .scrollIndicators(displayedFriends.count > GroupEditLayout.visibleFriendRows ? .visible : .hidden)
                         }
                     }
                 }
@@ -422,7 +479,7 @@ private struct GroupEditSheet: View {
                 .foregroundStyle(AppTheme.softText)
 
             TextField("Search friends", text: $searchQuery)
-                .font(.system(.subheadline, design: .rounded))
+                .font(AppTypography.searchInput)
                 .foregroundStyle(.white)
                 .tint(accent)
                 .focused($isSearchFocused)
@@ -471,11 +528,9 @@ private struct GroupEditSheet: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(friend.displayName)
-                        .font(.system(.headline, design: .rounded, weight: .semibold))
+                        .font(AppTypography.rowTitle)
                         .foregroundStyle(.white)
-                    Text("@\(friend.username)")
-                        .font(.system(.caption, design: .rounded))
-                        .foregroundStyle(AppTheme.softText)
+                    VerifiedUsernameLabel(profile: friend, font: AppTypography.usernameCompact, badgeSize: 10)
                 }
 
                 Spacer()
@@ -490,13 +545,14 @@ private struct GroupEditSheet: View {
                     if isSelected {
                         Image(systemName: "checkmark")
                             .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(AppTheme.foregroundOnAccent(accent))
                     }
                 }
                 .animation(.snappy(duration: 0.16), value: isSelected)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
+            .frame(height: GroupEditLayout.friendRowHeight)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -508,16 +564,16 @@ private struct GroupEditSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("Group name")
-                    .font(.system(size: 28, weight: .bold, design: .serif))
+                    .font(AppTypography.sectionTitle)
                     .foregroundStyle(.white)
                 Text("optional")
-                    .font(.system(.subheadline, design: .rounded, weight: .medium))
+                    .font(AppTypography.rowSubtitleMedium)
                     .foregroundStyle(AppTheme.softText.opacity(0.7))
             }
 
             NightPanel(cornerRadius: 20, padding: 0) {
                 TextField("e.g. Maddies Big Naturals", text: $groupName)
-                    .font(.system(.body, design: .rounded))
+                    .font(AppTypography.body)
                     .foregroundStyle(.white)
                     .tint(accent)
                     .focused($isNameFocused)
@@ -551,4 +607,10 @@ private struct GroupEditSheet: View {
             dismiss()
         }
     }
+}
+
+private enum GroupEditLayout {
+    static let visibleFriendRows = 5
+    static let friendRowHeight: CGFloat = 66
+    static let dividerHeight: CGFloat = 1
 }

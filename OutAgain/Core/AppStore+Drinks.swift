@@ -8,23 +8,6 @@ extension AppStore {
     private static let legacyDrinkOrderKeyPrefix = "OutAgain.DrinkOrder.v1."
     private static let drinkCatalogDefaultsKeyPrefix = "OutAgain.DrinkCatalog.v1."
     private static let dirtyDrinkCatalogDefaultsKeyPrefix = "OutAgain.DrinkCatalogDirty.v1."
-    /// UserDefaults key for the viewer's manually set profile favorite drink.
-    static let profileFavoriteDrinkKey = "OutAgain.ProfileFavoriteDrink.v1"
-
-    /// The viewer's self-declared favorite drink name, shown on their profile
-    /// stats card. nil = not set yet; the UI shows a "Tap to add" prompt.
-    var profileFavoriteDrinkName: String? {
-        UserDefaults.standard.string(forKey: Self.profileFavoriteDrinkKey)
-    }
-
-    func setProfileFavoriteDrink(_ name: String?) {
-        if let name = name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
-            UserDefaults.standard.set(name, forKey: Self.profileFavoriteDrinkKey)
-        } else {
-            UserDefaults.standard.removeObject(forKey: Self.profileFavoriteDrinkKey)
-        }
-    }
-
     /// The 8 drinks shown in the composer pill row, ranked by recency of
     /// actual use. Derives order from the viewer's post history so the drinks
     /// they reach for most often surface first. Falls back to the manual
@@ -35,19 +18,20 @@ extension AppStore {
         var recentlyUsed: [DrinkTag] = []
 
         for post in viewerPosts {
-            let key = Self.normalizedDrinkName(post.drink.name)
+            guard let drinkName = post.drink?.name else { continue }
+            let key = Self.normalizedDrinkName(drinkName)
             guard seen.insert(key).inserted else { continue }
             guard let catalogEntry = drinks.first(where: {
                 Self.normalizedDrinkName($0.name) == key
             }) else { continue }
             recentlyUsed.append(catalogEntry)
-            if recentlyUsed.count == 8 { break }
+            if recentlyUsed.count == 10 { break }
         }
 
-        if recentlyUsed.count < 8 {
+        if recentlyUsed.count < 10 {
             let usedKeys = Set(recentlyUsed.map { Self.normalizedDrinkName($0.name) })
             let remaining = drinks.filter { !usedKeys.contains(Self.normalizedDrinkName($0.name)) }
-            recentlyUsed.append(contentsOf: remaining.prefix(8 - recentlyUsed.count))
+            recentlyUsed.append(contentsOf: remaining.prefix(10 - recentlyUsed.count))
         }
 
         return recentlyUsed
@@ -64,7 +48,7 @@ extension AppStore {
     }
 
     @discardableResult
-    func addCustomDrink(named rawName: String) -> DrinkTag? {
+    func addCustomDrink(named rawName: String, emoji: String? = nil, selectForDraft: Bool = true) -> DrinkTag? {
         let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedName = Self.normalizedDrinkName(trimmed)
         guard !normalizedName.isEmpty else { return nil }
@@ -73,8 +57,26 @@ extension AppStore {
         preferences.deletedDrinkNames.removeAll { $0 == normalizedName }
 
         if let visible = drinks.first(where: { Self.normalizedDrinkName($0.name) == normalizedName }) {
+            if let customIndex = preferences.customDrinks.firstIndex(where: {
+                Self.normalizedDrinkName($0.name) == normalizedName
+            }) {
+                let existingCustom = preferences.customDrinks.remove(at: customIndex)
+                let updatedCustom = Self.customDrinkTag(from: existingCustom, emoji: emoji)
+                preferences.customDrinks.insert(updatedCustom, at: 0)
+                preferences.orderedDrinkNames.removeAll { $0 == normalizedName }
+                preferences.orderedDrinkNames.insert(normalizedName, at: 0)
+                commitDrinkCatalogPreferences(preferences)
+                let resolved = drinks.first(where: { Self.normalizedDrinkName($0.name) == normalizedName }) ?? updatedCustom
+                if selectForDraft {
+                    selectDrink(resolved)
+                }
+                return resolved
+            }
+
             commitDrinkCatalogPreferences(preferences)
-            selectDrink(visible)
+            if selectForDraft {
+                selectDrink(visible)
+            }
             return visible
         }
 
@@ -85,31 +87,40 @@ extension AppStore {
             preferences.orderedDrinkNames.insert(normalizedName, at: 0)
             commitDrinkCatalogPreferences(preferences)
             let resolved = drinks.first(where: { Self.normalizedDrinkName($0.name) == normalizedName }) ?? restoredSeed
-            selectDrink(resolved)
+            if selectForDraft {
+                selectDrink(resolved)
+            }
             return resolved
         }
 
         if let existingCustom = preferences.customDrinks.first(where: {
             Self.normalizedDrinkName($0.name) == normalizedName
         }) {
+            let updatedCustom = Self.customDrinkTag(from: existingCustom, emoji: emoji)
+            preferences.customDrinks.removeAll { Self.normalizedDrinkName($0.name) == normalizedName }
+            preferences.customDrinks.insert(updatedCustom, at: 0)
             preferences.orderedDrinkNames.removeAll { $0 == normalizedName }
             preferences.orderedDrinkNames.insert(normalizedName, at: 0)
             commitDrinkCatalogPreferences(preferences)
-            let resolved = drinks.first(where: { Self.normalizedDrinkName($0.name) == normalizedName }) ?? existingCustom
-            selectDrink(resolved)
+            let resolved = drinks.first(where: { Self.normalizedDrinkName($0.name) == normalizedName }) ?? updatedCustom
+            if selectForDraft {
+                selectDrink(resolved)
+            }
             return resolved
         }
 
-        let drink = Self.canonicalDrinkTag(
-            DrinkTag(
+        let drink = Self.customDrinkTag(
+            from: DrinkTag(
                 id: UUID(),
                 name: trimmed,
                 subtitle: "Custom",
                 symbol: "takeoutbag.and.cup.and.straw.fill",
                 imageName: nil,
+                emoji: emoji,
                 primaryHex: "#2A1815",
                 secondaryHex: "#B86831"
-            )
+            ),
+            emoji: emoji
         )
 
         preferences.customDrinks.removeAll { Self.normalizedDrinkName($0.name) == normalizedName }
@@ -119,10 +130,14 @@ extension AppStore {
         commitDrinkCatalogPreferences(preferences)
 
         guard let resolved = drinks.first(where: { Self.normalizedDrinkName($0.name) == normalizedName }) else {
-            selectDrink(drink)
+            if selectForDraft {
+                selectDrink(drink)
+            }
             return drink
         }
-        selectDrink(resolved)
+        if selectForDraft {
+            selectDrink(resolved)
+        }
         return resolved
     }
 
@@ -230,8 +245,24 @@ extension AppStore {
             subtitle: drink.subtitle,
             symbol: resolvedSymbol,
             imageName: resolvedImageName,
+            emoji: isCustomDrink ? drink.emoji : (DrinkTag.resolvedEmoji(for: drink.name) ?? drink.emoji),
             primaryHex: drink.primaryHex,
             secondaryHex: drink.secondaryHex
+        )
+    }
+
+    static func customDrinkTag(from drink: DrinkTag, emoji: String?) -> DrinkTag {
+        canonicalDrinkTag(
+            DrinkTag(
+                id: drink.id,
+                name: drink.name,
+                subtitle: "Custom",
+                symbol: "takeoutbag.and.cup.and.straw.fill",
+                imageName: nil,
+                emoji: emoji ?? drink.emoji,
+                primaryHex: drink.primaryHex,
+                secondaryHex: drink.secondaryHex
+            )
         )
     }
 

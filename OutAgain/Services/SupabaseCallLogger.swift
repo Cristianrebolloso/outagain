@@ -36,7 +36,7 @@ final class SupabaseCallLogger {
         #endif
     }()
 
-    nonisolated(unsafe) private let log = OSLog(subsystem: "com.outagain.app", category: "SUPA")
+    nonisolated private let log = OSLog(subsystem: "com.outagain.app", category: "SUPA")
 
     // Rolling in-memory ledger for the session summary.
     private var entries: [Entry] = []

@@ -13,22 +13,29 @@ struct GroupCreationSheet: View {
 
     private var canCreate: Bool { !selectedFriendIDs.isEmpty }
 
-    /// Top 5 friends by display name, then filtered by search query if active.
+    /// All friends are available in the picker; the panel itself controls how
+    /// many rows are visible before scrolling.
     private var displayedFriends: [UserProfile] {
-        let top5 = Array(store.friends.prefix(5))
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !query.isEmpty else { return top5 }
+        guard !query.isEmpty else { return store.friends }
         return store.friends.filter {
             $0.displayName.lowercased().contains(query) ||
             $0.username.lowercased().contains(query)
         }
     }
 
+    private var friendListViewportHeight: CGFloat {
+        let visibleRows = min(displayedFriends.count, GroupCreationLayout.visibleFriendRows)
+        guard visibleRows > 0 else { return 0 }
+        let dividerCount = max(visibleRows - 1, 0)
+        return CGFloat(visibleRows) * GroupCreationLayout.friendRowHeight
+            + CGFloat(dividerCount) * GroupCreationLayout.dividerHeight
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    pitchHeader
                     friendPicker
                     nameField
                 }
@@ -37,42 +44,30 @@ struct GroupCreationSheet: View {
                 .padding(.bottom, 40)
             }
             .scrollIndicators(.hidden)
+            .scrollDismissesKeyboard(.interactively)
+            .safeAreaPadding(.bottom, store.isDuoDevice && isNameFocused ? 20 : 0)
             .scrollContentBackground(.hidden)
             .background(AmbientBackground())
-            .navigationTitle("Create Group")
-            .navigationBarTitleDisplayMode(.inline)
+            .appSecondaryPageNavigation(title: "Create Group")
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Cancel") { dismiss() }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button { dismiss() } label: {
+                        if store.isDuoDevice { Label("Cancel", systemImage: "xmark") }
+                        else { Text("Cancel") }
+                    }
                         .foregroundStyle(AppTheme.softText)
                 }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Create") { createGroup() }
-                        .font(.body.weight(.bold))
-                        .foregroundStyle(canCreate ? accent : AppTheme.softText)
-                        .disabled(!canCreate)
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
+                        createGroup()
+                    } label: {
+                        if store.isDuoDevice { Label("Create", systemImage: "checkmark") }
+                        else { Text("Create").font(AppTypography.button) }
+                    }
+                    .tint(accent)
+                    .disabled(!canCreate)
+                    .accessibilityIdentifier("group.create.confirm")
                 }
-            }
-        }
-    }
-
-    // MARK: - Pitch header
-
-    private var pitchHeader: some View {
-        NightPanel(cornerRadius: 24, padding: 18) {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 10) {
-                    Image(systemName: "person.3.fill")
-                        .font(.system(size: 20, weight: .bold))
-                        .foregroundStyle(accent)
-                    Text("One feed for your group")
-                        .font(.system(.headline, design: .rounded, weight: .bold))
-                        .foregroundStyle(.white)
-                }
-                Text("Add friends and every post you all make tonight shows up in one shared feed.")
-                    .font(.system(.subheadline, design: .rounded))
-                    .foregroundStyle(AppTheme.softText)
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -82,7 +77,7 @@ struct GroupCreationSheet: View {
     private var friendPicker: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Add friends")
-                .font(.system(size: 28, weight: .bold, design: .serif))
+                .font(AppTypography.sectionTitle)
                 .foregroundStyle(.white)
 
             if store.friends.isEmpty {
@@ -92,7 +87,7 @@ struct GroupCreationSheet: View {
                             .font(.system(size: 18))
                             .foregroundStyle(AppTheme.softText)
                         Text("Add friends first to create a group.")
-                            .font(.system(.subheadline, design: .rounded))
+                            .font(AppTypography.rowSubtitle)
                             .foregroundStyle(AppTheme.softText)
                     }
                 }
@@ -111,22 +106,29 @@ struct GroupCreationSheet: View {
                         if displayedFriends.isEmpty {
                             HStack {
                                 Text("No friends match \"\(searchQuery)\"")
-                                    .font(.system(.subheadline, design: .rounded))
+                                    .font(AppTypography.rowSubtitle)
                                     .foregroundStyle(AppTheme.softText)
                                 Spacer()
                             }
                             .padding(.horizontal, 16)
                             .padding(.vertical, 14)
                         } else {
-                            ForEach(displayedFriends) { friend in
-                                friendRow(friend)
+                            ScrollView {
+                                LazyVStack(spacing: 0) {
+                                    ForEach(displayedFriends) { friend in
+                                        friendRow(friend)
 
-                                if friend.id != displayedFriends.last?.id {
-                                    Divider()
-                                        .overlay(AppTheme.line)
-                                        .padding(.leading, 66)
+                                        if friend.id != displayedFriends.last?.id {
+                                            Divider()
+                                                .overlay(AppTheme.line)
+                                                .padding(.leading, 66)
+                                        }
+                                    }
                                 }
                             }
+                            .frame(height: friendListViewportHeight)
+                            .scrollDisabled(displayedFriends.count <= GroupCreationLayout.visibleFriendRows)
+                            .scrollIndicators(displayedFriends.count > GroupCreationLayout.visibleFriendRows ? .visible : .hidden)
                         }
                     }
                 }
@@ -141,7 +143,7 @@ struct GroupCreationSheet: View {
                 .foregroundStyle(AppTheme.softText)
 
             TextField("Search friends", text: $searchQuery)
-                .font(.system(.subheadline, design: .rounded))
+                .font(AppTypography.searchInput)
                 .foregroundStyle(.white)
                 .tint(accent)
                 .focused($isSearchFocused)
@@ -185,11 +187,9 @@ struct GroupCreationSheet: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(friend.displayName)
-                        .font(.system(.headline, design: .rounded, weight: .semibold))
+                        .font(AppTypography.rowTitle)
                         .foregroundStyle(.white)
-                    Text("@\(friend.username)")
-                        .font(.system(.caption, design: .rounded))
-                        .foregroundStyle(AppTheme.softText)
+                    VerifiedUsernameLabel(profile: friend, font: AppTypography.usernameCompact, badgeSize: 10)
                 }
 
                 Spacer()
@@ -204,16 +204,18 @@ struct GroupCreationSheet: View {
                     if isSelected {
                         Image(systemName: "checkmark")
                             .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(AppTheme.foregroundOnAccent(accent))
                     }
                 }
                 .animation(.snappy(duration: 0.16), value: isSelected)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
+            .frame(height: GroupCreationLayout.friendRowHeight)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityValue(isSelected ? "Selected" : "Not selected")
     }
 
     // MARK: - Name field
@@ -222,16 +224,16 @@ struct GroupCreationSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("Group name")
-                    .font(.system(size: 28, weight: .bold, design: .serif))
+                    .font(AppTypography.sectionTitle)
                     .foregroundStyle(.white)
                 Text("optional")
-                    .font(.system(.subheadline, design: .rounded, weight: .medium))
+                    .font(AppTypography.rowSubtitleMedium)
                     .foregroundStyle(AppTheme.softText.opacity(0.7))
             }
 
             NightPanel(cornerRadius: 20, padding: 0) {
                 TextField("e.g. Maddies Big Naturals", text: $groupName)
-                    .font(.system(.body, design: .rounded))
+                    .font(AppTypography.body)
                     .foregroundStyle(.white)
                     .tint(accent)
                     .focused($isNameFocused)
@@ -252,4 +254,10 @@ struct GroupCreationSheet: View {
         )
         dismiss()
     }
+}
+
+private enum GroupCreationLayout {
+    static let visibleFriendRows = 5
+    static let friendRowHeight: CGFloat = 66
+    static let dividerHeight: CGFloat = 1
 }

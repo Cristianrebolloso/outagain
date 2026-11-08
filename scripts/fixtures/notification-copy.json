@@ -1,0 +1,22 @@
+[
+  {"kind":"comment","title":"Mia commented on your post","expected":"Mia left a comment on your post!"},
+  {"kind":"comment","title":"  Mia commented on your post.  ","expected":"Mia left a comment on your post!"},
+  {"kind":"comment","title":"Mia left a comment on your post!","expected":"Mia left a comment on your post!"},
+  {"kind":"comment","title":"O’Connor replied to your comment","expected":"O’Connor replied to your comment!"},
+  {"kind":"comment","title":"!!Mia 🪩 commented on your post!","expected":"!!Mia 🪩 left a comment on your post!"},
+  {"kind":"comment","title":"The commented on your post Club commented on your post","expected":"The commented on your post Club left a comment on your post!"},
+  {"kind":"photoReply","title":"Ethan commented on your post","expected":"Ethan left a photo on your post!"},
+  {"kind":"photoReply","title":"Ethan replied to your comment","expected":"Ethan replied to your comment with a photo!"},
+  {"kind":"friendRequest","title":"Jordan sent you a friend request","expected":"Jordan sent you a friend request!"},
+  {"kind":"friendRequest","title":"Jordan sent you a friend request!","expected":"Jordan sent you a friend request!"},
+  {"kind":"friendAccepted","title":"Mia accepted your friend request","expected":"Mia accepted your friend request!"},
+  {"kind":"commentTagged","title":"Mia mentioned you in a comment","expected":"Mia mentioned you in a comment!"},
+  {"kind":"commentLike","title":"Mia liked your comment","expected":"Mia liked your comment"},
+  {"kind":"reaction","title":"Mia disliked your post","expected":"Mia disliked your post"},
+  {"kind":"friendPost","title":"Mia just posted","expected":"Mia just posted"},
+  {"kind":"groupAdded","title":"Mia added you to a group","expected":"Mia added you to a group"},
+  {"kind":"nightRecap","title":"Last night's photos are ready","expected":"Last night's photos"},
+  {"kind":"nightRecap","title":"Your group's photos from last night","expected":"Last night's photos"},
+  {"kind":"announcement","title":"Friday 🎉","expected":"Friday 🎉"},
+  {"kind":"futureKind","title":"A new kind of activity","expected":"A new kind of activity"}
+]

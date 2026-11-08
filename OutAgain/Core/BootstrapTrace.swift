@@ -6,7 +6,7 @@ import os
 /// gives you a flame-graph-shaped readout of where bootstrap time is spent.
 ///
 /// Compiled out in Release — `#if DEBUG` gates every public entry point so
-/// the optimizer drops the calls entirely on TestFlight/App Store builds.
+/// the optimizer drops the calls entirely on distributed Release builds.
 enum BootstrapTrace {
     private static let logger = Logger(subsystem: "OutAgain", category: "bootstrap")
     private static var firstEventTime: TimeInterval?

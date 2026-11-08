@@ -41,13 +41,6 @@ struct MaddoxPlayerView: View {
                 .offset(x: -80, y: 120)
 
             VStack(spacing: 0) {
-                // Dismiss handle
-                Capsule()
-                    .fill(.white.opacity(0.25))
-                    .frame(width: 36, height: 4)
-                    .padding(.top, 14)
-                    .padding(.bottom, 28)
-
                 // Album artwork
                 artworkView
                     .padding(.bottom, 36)
@@ -70,6 +63,7 @@ struct MaddoxPlayerView: View {
                     .padding(.horizontal, 28)
                     .padding(.bottom, 40)
             }
+            .padding(.top, 54)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         .onAppear {
@@ -131,7 +125,7 @@ struct MaddoxPlayerView: View {
     private var songInfoView: some View {
         VStack(spacing: 6) {
             Text("How Deep Is Your Love")
-                .font(.system(size: 22, weight: .bold, design: .rounded))
+                .font(AppTypography.sectionTitle)
                 .foregroundStyle(.white)
                 .multilineTextAlignment(.center)
                 .opacity(appeared ? 1 : 0)
@@ -145,7 +139,7 @@ struct MaddoxPlayerView: View {
                     .frame(width: 6, height: 6)
 
                 Text("Maddox")
-                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                    .font(AppTypography.rowTitle)
                     .foregroundStyle(accent)
             }
             .opacity(appeared ? 1 : 0)
@@ -198,13 +192,13 @@ struct MaddoxPlayerView: View {
             // Time labels
             HStack {
                 Text(timeString(currentTime))
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .font(AppTypography.timer)
                     .foregroundStyle(.white.opacity(0.55))
 
                 Spacer()
 
                 Text("-\(timeString(max(0, duration - currentTime)))")
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .font(AppTypography.timer)
                     .foregroundStyle(.white.opacity(0.55))
             }
         }
@@ -259,9 +253,11 @@ struct MaddoxPlayerView: View {
                         .foregroundStyle(.white)
                         .offset(x: isPlaying ? 0 : 2) // optical centering for play icon
                 }
+                .contentShape(Circle())
             }
             .buttonStyle(.plain)
             .glassEffect(.regular.tint(accent.opacity(0.3)).interactive(), in: .circle)
+            .contentShape(Circle())
 
             // Fast-forward
             transportButton(symbol: "forward.fill", size: 22) {
@@ -287,7 +283,7 @@ struct MaddoxPlayerView: View {
     // MARK: - Audio Engine
 
     private func setupPlayer() {
-        guard let url = Bundle.main.url(forResource: "HowDeepIsYourLove", withExtension: "mp3") else {
+        guard let url = Bundle.main.url(forResource: "Maddox", withExtension: "wav") else {
             return
         }
 

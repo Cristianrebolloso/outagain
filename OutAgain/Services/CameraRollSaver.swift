@@ -1,8 +1,9 @@
 import Foundation
+import ImageIO
 import Photos
-import UIKit
+import UniformTypeIdentifiers
 
-enum CameraRollSaveError: LocalizedError {
+enum CameraRollSaveError: LocalizedError, Equatable {
     case missingImage
     case unreadableImage
     case permissionDenied
@@ -27,6 +28,11 @@ enum CameraRollSaveError: LocalizedError {
 
 struct CameraRollSaver {
     func save(media: MomentMedia) async throws {
+        try await save(media: [media])
+    }
+
+    func save(media: [MomentMedia]) async throws {
+        guard !media.isEmpty else { return }
         switch await authorizationStatus() {
         case .authorized, .limited:
             break
@@ -36,13 +42,28 @@ struct CameraRollSaver {
             throw CameraRollSaveError.permissionDenied
         }
 
-        let imageData = try await resolveImageData(for: media)
-        guard let image = UIImage(data: imageData) else {
-            throw CameraRollSaveError.unreadableImage
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("outagain-save-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        // Prepare the originals on disk before one Photos transaction. A failed
+        // download leaves the library untouched, so retrying won't add duplicates.
+        var files: [URL] = []
+        for photo in media {
+            try Task.checkCancellation()
+            let file = try await prepareImageFile(photoData: photo.photoData,
+                                                  remotePhotoURL: photo.remotePhotoURL,
+                                                  in: directory)
+            files.append(file)
         }
 
+        try Task.checkCancellation()
+        let preparedFiles = files
         try await PHPhotoLibrary.shared().performChanges {
-            PHAssetChangeRequest.creationRequestForAsset(from: image)
+            for file in preparedFiles {
+                PHAssetCreationRequest.forAsset().addResource(with: .photo, fileURL: file, options: nil)
+            }
         }
     }
 
@@ -52,21 +73,32 @@ struct CameraRollSaver {
         return await PHPhotoLibrary.requestAuthorization(for: .addOnly)
     }
 
-    private func resolveImageData(for media: MomentMedia) async throws -> Data {
-        if let photoData = media.photoData {
-            return photoData
-        }
-
-        guard let remotePhotoURL = media.remotePhotoURL else {
+    @concurrent
+    private func prepareImageFile(photoData: Data?, remotePhotoURL: URL?, in directory: URL) async throws -> URL {
+        let temporaryFile = directory.appendingPathComponent(UUID().uuidString)
+        if let photoData {
+            try photoData.write(to: temporaryFile, options: .atomic)
+        } else if let remotePhotoURL {
+            let (download, response) = try await URLSession.shared.download(from: remotePhotoURL)
+            defer { try? FileManager.default.removeItem(at: download) }
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200 ... 299).contains(httpResponse.statusCode) else {
+                throw CameraRollSaveError.downloadFailed
+            }
+            try FileManager.default.moveItem(at: download, to: temporaryFile)
+        } else {
             throw CameraRollSaveError.missingImage
         }
 
-        let (data, response) = try await URLSession.shared.data(from: remotePhotoURL)
-        if let httpResponse = response as? HTTPURLResponse,
-           !(200 ... 299).contains(httpResponse.statusCode) {
-            throw CameraRollSaveError.downloadFailed
+        guard let source = CGImageSourceCreateWithURL(temporaryFile as CFURL, nil),
+              CGImageSourceGetCount(source) > 0,
+              CGImageSourceGetStatus(source) == .statusComplete,
+              let type = CGImageSourceGetType(source),
+              let fileExtension = UTType(type as String)?.preferredFilenameExtension else {
+            throw CameraRollSaveError.unreadableImage
         }
-
-        return data
+        let file = temporaryFile.appendingPathExtension(fileExtension)
+        try FileManager.default.moveItem(at: temporaryFile, to: file)
+        return file
     }
 }
