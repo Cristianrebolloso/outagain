@@ -141,21 +141,67 @@ struct MainTabRefreshIndicator: View {
     }
 }
 
+struct GlassRefreshPosition {
+    private(set) var pull: CGFloat = 0
+    private var pinnedOffset: CGFloat?
+    private(set) var gestureRefreshID: UUID?
+    private(set) var isRunningAction = false
+
+    var offset: CGFloat { pinnedOffset ?? min(28, pull * 0.3) }
+
+    mutating func updatePull(_ distance: CGFloat) { pull = max(0, distance) }
+    mutating func beginDrag() { pinnedOffset = nil }
+    mutating func pinForRefresh(at offset: CGFloat? = nil) {
+        pinnedOffset = offset ?? self.offset
+    }
+
+    mutating func beginGestureRefresh() -> UUID {
+        let id = UUID()
+        pinForRefresh()
+        gestureRefreshID = id
+        isRunningAction = true
+        return id
+    }
+
+    /// Call from a view update, after the caller's latest loading flag arrives.
+    /// Some actions start an externally tracked request and return immediately.
+    mutating func completeAction(_ id: UUID, isRefreshing: Bool) {
+        guard gestureRefreshID == id else { return }
+        isRunningAction = false
+        if !isRefreshing { gestureRefreshID = nil }
+    }
+
+    mutating func observeExternalRefresh(_ refreshing: Bool, isInteracting: Bool) {
+        if refreshing {
+            if gestureRefreshID == nil {
+                pinForRefresh(at: isInteracting ? offset : 0)
+            }
+        } else if !isRunningAction {
+            gestureRefreshID = nil
+        }
+        // Retain the final offset through the disappearance animation. The next
+        // drag or programmatic refresh chooses its own position.
+    }
+}
+
 private struct GlassPullToRefresh: ViewModifier {
     let isRefreshing: Bool
     let action: () async -> Void
-    @State private var pull: CGFloat = 0
+    @State private var position = GlassRefreshPosition()
     @State private var isInteracting = false
     @State private var isArmed = false
+    @State private var completedRefreshID: UUID?
     @State private var refreshTask: Task<Void, Never>?
+
+    private var isRefreshActive: Bool { isRefreshing || position.isRunningAction }
 
     func body(content: Content) -> some View {
         content
             .onScrollGeometryChange(for: CGFloat.self) { geometry in
                 max(0, -(geometry.contentOffset.y + geometry.contentInsets.top))
             } action: { _, distance in
-                pull = distance
-                if isInteracting && !isRefreshing {
+                position.updatePull(distance)
+                if isInteracting && !isRefreshActive {
                     let armed = distance >= 60
                     if armed && !isArmed { UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
                     isArmed = armed
@@ -163,20 +209,46 @@ private struct GlassPullToRefresh: ViewModifier {
             }
             .onScrollPhaseChange { oldPhase, newPhase in
                 isInteracting = newPhase == .interacting
-                if oldPhase == .interacting, newPhase != .tracking, isArmed, !isRefreshing {
+                if newPhase == .interacting && !isRefreshActive {
+                    position.beginDrag()
+                }
+                if oldPhase == .interacting, newPhase != .tracking, isArmed, !isRefreshActive {
                     isArmed = false
-                    refreshTask = Task { await action() }
+                    // Keep this same glass view at the release position while
+                    // the scroll view springs back and the async work starts.
+                    let refreshID = position.beginGestureRefresh()
+                    refreshTask = Task { @MainActor in
+                        await action()
+                        completedRefreshID = refreshID
+                    }
                 }
             }
+            .onChange(of: completedRefreshID) { _, id in
+                guard let id else { return }
+                withAnimation(.easeOut(duration: 0.18)) {
+                    position.completeAction(id, isRefreshing: isRefreshing)
+                }
+                resumeDragIfNeeded()
+            }
+            .onChange(of: isRefreshing) { _, refreshing in
+                position.observeExternalRefresh(refreshing, isInteracting: isInteracting)
+                resumeDragIfNeeded()
+            }
             .overlay(alignment: .top) {
-                if isRefreshing || (isInteracting && pull > 6) {
-                    MainTabRefreshIndicator(progress: min(1, pull / 60), isRefreshing: isRefreshing)
+                if isRefreshActive || (isInteracting && position.pull > 6) {
+                    MainTabRefreshIndicator(progress: min(1, position.pull / 60), isRefreshing: isRefreshActive)
                         .padding(.top, 8)
-                        .offset(y: isRefreshing ? 0 : min(28, pull * 0.3))
+                        .offset(y: position.offset)
                         .transition(.opacity)
                 }
             }
             .onDisappear { refreshTask?.cancel() }
+    }
+
+    private func resumeDragIfNeeded() {
+        guard isInteracting, !isRefreshActive else { return }
+        position.beginDrag()
+        isArmed = position.pull >= 60
     }
 }
 

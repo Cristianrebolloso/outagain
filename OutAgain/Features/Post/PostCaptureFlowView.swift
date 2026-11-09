@@ -159,18 +159,9 @@ struct PostCaptureFlowView: View {
         camera.supportsSubjectPreview && camera.lensMode.isRear && !isComposing && !isReviewingCapture && camera.setupState == .ready
     }
 
-    /// Review continues on black so the photo and details stay the focus.
-    @ViewBuilder
+    /// Black outside the capture guide keeps its visible boundary unambiguous.
     private var postCaptureFlowBackground: some View {
-        if isReviewingCapture {
-            Color.black.ignoresSafeArea()
-        } else {
-            ZStack {
-                AppTheme.backgroundGradient
-                Color.black.opacity(0.26)
-            }
-            .ignoresSafeArea()
-        }
+        Color.black.ignoresSafeArea()
     }
 
     /// The pill row the composer renders. Draws from `composerDrinks` (already
@@ -522,8 +513,8 @@ struct PostCaptureFlowView: View {
                     captureSurface
                         .frame(width: geometry.size.width, height: geometry.size.height)
                         .clipped()
-                    // Fill this physical half with the live scene. The rounded
-                    // guide describes exactly the 4:5 crop retained in the post.
+                    // Keep the full preview's coordinate space for WYSIWYG
+                    // capture, but hide everything outside its retained crop.
                     Path { path in
                         path.addRect(CGRect(origin: .zero, size: geometry.size))
                         let guideRect = CGRect(
@@ -534,7 +525,7 @@ struct PostCaptureFlowView: View {
                             cornerRadius: PostPhotoFormat.cornerRadius, style: .continuous
                         ).path(in: guideRect))
                     }
-                    .fill(.black.opacity(0.22), style: FillStyle(eoFill: true))
+                    .fill(.black, style: FillStyle(eoFill: true))
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
                     RoundedRectangle(cornerRadius: PostPhotoFormat.cornerRadius, style: .continuous)
@@ -1491,7 +1482,7 @@ private struct CaptureComposerView: View {
             }
 
             composerSearchField(
-                placeholder: "Search friends",
+                placeholder: "Search friends (optional)",
                 text: $tagSearch,
                 focusedField: .tagSearch
             )
@@ -1538,7 +1529,7 @@ private struct CaptureComposerView: View {
                 }
             }
 
-            TextField("Add a caption", text: $caption, axis: .vertical)
+            TextField("Add a caption (optional)", text: $caption, axis: .vertical)
                 .accessibilityLabel("Caption")
                 .accessibilityIdentifier("post.caption")
                 .focused($focusedField, equals: .caption)

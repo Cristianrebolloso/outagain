@@ -34,7 +34,7 @@ struct PlusMembershipView: View {
                             .font(AppTypography.rowTitle)
                     }
 
-                    NightPanel(cornerRadius: 28) {
+                    NightPanel(cornerRadius: 28, tint: .black.opacity(0.15)) {
                         VStack(alignment: .leading, spacing: 20) {
                             benefit("Ad-free feed", symbol: "sparkles")
                             benefit("Every background", symbol: "paintpalette.fill")
@@ -53,14 +53,10 @@ struct PlusMembershipView: View {
                             purchaseButton(PurchaseCatalog.monthly, period: "month")
                             purchaseButton(PurchaseCatalog.yearly, period: "year")
                             if store.purchases.isLoadingProducts { ProgressView() }
-                            Text("Billed to your Apple Account. Renews automatically unless canceled at least 24 hours before renewal. Manage in App Store settings.")
+                            Text("Billed to your Apple Account. Renews automatically unless canceled at least 24 hours before renewal. Background access lasts while subscribed. Manage in App Store settings.")
                                 .font(AppTypography.metadata).foregroundStyle(.secondary)
                         }
                     }
-
-                    Text("Background access lasts while subscribed.")
-                        .font(AppTypography.metadata).foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
 
                     if let message = store.purchases.message {
                         Text(message).font(AppTypography.rowSubtitle)
@@ -79,7 +75,10 @@ struct PlusMembershipView: View {
                 .padding(24)
                 .frame(maxWidth: .infinity)
             }
-            .background(Color.black)
+            .background {
+                AmbientBackground(overrideTheme: .blue)
+                    .ignoresSafeArea()
+            }
             .foregroundStyle(.white)
             .tint(store.accentColorChoice.color)
             .navigationTitle(background?.label ?? "Out Again+")

@@ -5,8 +5,8 @@ tracking drink tags, and seeing friends' nights.
 
 ## Invitations
 
-People and profile onboarding offer Invite friends (native share sheet / QR)
-and Use code. A server-issued link points to the published landing page:
+People and profile onboarding offer Invite friends (native share sheet / QR).
+Friends can also find one another by username. A server-issued link points to the published landing page:
 `https://cristianrebolloso.github.io/invite/?code=<token>`.
 
 Opening a link only previews it. Explicit acceptance sends a friend request,
@@ -22,18 +22,18 @@ through the Data API. No new analytics or contact-address-book access was added.
 
 Pending links survive sign-in/profile setup. Invites wait for camera/notification
 presentations to close. A dismissed invite is not automatically reopened after
-posting; People retains a Continue invite action. New links supersede old preview
+posting; People retains a View invite action. New links supersede old preview
 requests, and an old acceptance cannot clear a newer pending link.
 
 Universal links use `applinks:cristianrebolloso.github.io`, with AASA hosted in the
 website repo `../outagain-website`. The landing page provides an explicit custom
-URL open action and copy/paste fallback after installation. iOS does not promise
+URL open action and Copy link. iOS does not promise
 that a web invite is automatically retained through a first App Store install;
-users reopen the link or paste it after installing.
+users reopen the shared link after installing.
 
 ## Other changes
 
-- Compact Posted tonight strip, Post action, and Tonight / Earlier feed boundaries.
+- Compact Posted tonight strip, Groups action, and Tonight / Earlier feed boundaries.
 - Drink Totals immediately after the profile's Nights Posted Out hero.
 - Same-post Activity interactions on the same day expand as a bundle, preserving
   every original timestamp, unread flag, exact comment link, and dismiss action.

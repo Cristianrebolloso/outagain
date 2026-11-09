@@ -21,7 +21,7 @@ extension SupabaseSocialBackendClient {
 
     private func validatedInviteCode(_ token: String) throws -> String {
         guard let code = SocialInviteCode.normalized(token) else {
-            throw SupabaseBackendError.requestFailed("That invite code isn't valid.", statusCode: 400)
+            throw SupabaseBackendError.requestFailed("That invite link isn't valid.", statusCode: 400)
         }
         return code
     }

@@ -10,7 +10,8 @@ struct PostPhotoReviewView<Details: View>: View {
     @State private var revealsDetails = false
     @State private var hasFinishedEntry = false
     @State private var isPhotoExpanded = false
-    @Namespace private var photoExpansion
+    @State private var portraitDetailsHeight: CGFloat = 0
+    @State private var footerHeight: CGFloat = 0
 
     let photoData: Data?
     let sampleSymbol: String
@@ -42,24 +43,8 @@ struct PostPhotoReviewView<Details: View>: View {
                     .allowsHitTesting(!isPhotoExpanded)
                     .accessibilityHidden(isPhotoExpanded)
                     .overlayPreferenceValue(ReviewPhotoBoundsKey.self) { anchor in
-                        if isPhotoExpanded {
-                            expandedPhoto(in: geometry.size)
-                                .transition(.identity)
-                        } else if let anchor, !hasFinishedEntry {
-                            let target = geometry[anchor]
-                            let frame = geometry.frame(in: .global)
-                            let fallbackSize = PostPhotoFormat.fittedSize(in: geometry.size)
-                            let fallback = CGRect(
-                                x: (geometry.size.width - fallbackSize.width) / 2,
-                                y: (geometry.size.height - fallbackSize.height) / 2,
-                                width: fallbackSize.width, height: fallbackSize.height)
-                            let source = captureFrame?.offsetBy(dx: -frame.minX, dy: -frame.minY) ?? fallback
-                            let displayedFrame = revealsDetails ? target : source
-                            photo
-                                .frame(width: displayedFrame.width, height: displayedFrame.height)
-                                .position(x: displayedFrame.midX, y: displayedFrame.midY)
-                                .allowsHitTesting(false)
-                                .accessibilityHidden(true)
+                        if let anchor {
+                            photoLayer(in: geometry, previewFrame: geometry[anchor])
                         }
                     }
             }
@@ -196,17 +181,14 @@ struct PostPhotoReviewView<Details: View>: View {
         } else {
             ScrollView {
                 VStack(spacing: 20) {
-                    // Keep the photo recognizable while giving the optional
-                    // fields enough room to fit on a regular portrait phone.
-                    let height = isEditingDetails
-                        ? min(96, max(64, size.height * 0.20))
-                        : (isDuoDevice && size.width < 640
-                           ? min(160, max(96, size.height * 0.22))
-                           : min(270, max(160, size.height * 0.33)))
+                    let height = portraitPhotoHeight(in: size)
                     photoSlot(size: PostPhotoFormat.fittedSize(in: CGSize(
                         width: max(0, size.width - 40), height: height)))
                         .frame(maxWidth: .infinity)
                     details
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+                            portraitDetailsHeight = $0
+                        }
                         .opacity(revealsDetails ? 1 : 0)
                         .offset(y: revealsDetails ? 0 : 12)
                 }
@@ -222,6 +204,23 @@ struct PostPhotoReviewView<Details: View>: View {
         }
     }
 
+    private func portraitPhotoHeight(in size: CGSize) -> CGFloat {
+        let ideal: CGFloat
+        if isEditingDetails {
+            ideal = min(96, max(64, size.height * 0.20))
+        } else if isDuoDevice && size.width < 640 {
+            ideal = min(200, max(144, size.height * 0.30))
+        } else {
+            ideal = min(270, max(160, size.height * 0.33))
+        }
+        guard isDuoDevice, size.width < 640, portraitDetailsHeight > 0 else { return ideal }
+        // Use the room actually left by the form, including selected friends
+        // and wrapped captions. Long accessibility content can still scroll.
+        let spacing: CGFloat = 8 + 20 + 16
+        let available = size.height - portraitDetailsHeight - max(footerHeight, 74) - spacing
+        return min(ideal, max(64, available))
+    }
+
     private var detailsColumn: some View {
         ScrollView {
             details
@@ -235,25 +234,10 @@ struct PostPhotoReviewView<Details: View>: View {
     }
 
     private func photoSlot(size: CGSize) -> some View {
-        Button(action: togglePhotoExpansion) {
-            ZStack {
-                Color.clear
-                if !isPhotoExpanded {
-                    photo
-                        .matchedGeometryEffect(id: "reviewPhoto", in: photoExpansion)
-                        .opacity(hasFinishedEntry ? 1 : 0)
-                }
-            }
+        Color.clear
             .frame(width: size.width, height: size.height)
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: isEditingDetails)
-            .contentShape(RoundedRectangle(cornerRadius: PostPhotoFormat.cornerRadius))
-        }
-        .buttonStyle(.plain)
-        .disabled(!hasFinishedEntry)
         .anchorPreference(key: ReviewPhotoBoundsKey.self, value: .bounds) { $0 }
-        .accessibilityLabel("Your photo")
-        .accessibilityHint("Double-tap to enlarge")
-        .accessibilityIdentifier("post.photo")
+        .accessibilityHidden(true)
         #if DEBUG
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
             if ProcessInfo.processInfo.arguments.contains("--duo-layout-preview"),
@@ -264,34 +248,65 @@ struct PostPhotoReviewView<Details: View>: View {
         #endif
     }
 
-    private func expandedPhoto(in size: CGSize) -> some View {
+    private func photoLayer(in geometry: GeometryProxy, previewFrame: CGRect) -> some View {
+        // Keep a single decoded photo mounted for capture, expand and close.
+        // Animating one frame avoids matched-view insertion/removal fades.
+        let viewport = expandedViewport(in: geometry)
         let fitted = PostPhotoFormat.fittedSize(in: CGSize(
-            width: max(0, size.width - 24), height: max(0, size.height - 24)))
+            width: max(0, viewport.width - 24), height: max(0, viewport.height - 24)))
+        let expandedFrame = CGRect(
+            x: viewport.midX - fitted.width / 2, y: viewport.midY - fitted.height / 2,
+            width: fitted.width, height: fitted.height)
+        let globalFrame = geometry.frame(in: .global)
+        let sourceFrame = captureFrame?.offsetBy(dx: -globalFrame.minX, dy: -globalFrame.minY) ?? expandedFrame
+        let displayedFrame = isPhotoExpanded ? expandedFrame : (revealsDetails ? previewFrame : sourceFrame)
+        let clipFrame = isPhotoExpanded ? viewport : CGRect(origin: .zero, size: geometry.size)
         return ZStack {
             Color.black
                 .ignoresSafeArea()
+                .opacity(isPhotoExpanded ? 1 : 0)
                 .accessibilityHidden(true)
-                .transition(.opacity)
+                .onTapGesture { togglePhotoExpansion() }
+                .allowsHitTesting(isPhotoExpanded)
             Button(action: togglePhotoExpansion) {
                 photo
-                    .matchedGeometryEffect(id: "reviewPhoto", in: photoExpansion)
-                    .frame(width: fitted.width, height: fitted.height)
+                    .frame(width: displayedFrame.width, height: displayedFrame.height)
                     .contentShape(RoundedRectangle(cornerRadius: PostPhotoFormat.cornerRadius))
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Expanded photo")
-            .accessibilityHint("Double-tap to return to the smaller preview")
-            .accessibilityIdentifier("post.photo.expanded")
+            .position(x: displayedFrame.midX, y: displayedFrame.midY)
+            .disabled(!hasFinishedEntry)
+            .accessibilityHidden(!hasFinishedEntry)
+            .accessibilityLabel(isPhotoExpanded ? "Expanded photo" : "Your photo")
+            .accessibilityHint(isPhotoExpanded ? "Double-tap to return to the smaller preview" : "Double-tap to enlarge")
+            .accessibilityIdentifier(isPhotoExpanded ? "post.photo.expanded" : "post.photo")
         }
-        .frame(width: size.width, height: size.height)
-        .accessibilityAddTraits(.isModal)
-        .accessibilityAction(.escape) { togglePhotoExpansion() }
+        .frame(width: geometry.size.width, height: geometry.size.height)
+        .mask {
+            Rectangle()
+                .frame(width: clipFrame.width, height: clipFrame.height)
+                .position(x: clipFrame.midX, y: clipFrame.midY)
+        }
+        .accessibilityAddTraits(isPhotoExpanded ? .isModal : [])
+        .accessibilityAction(.escape) {
+            if isPhotoExpanded { togglePhotoExpansion() }
+        }
+    }
+
+    private func expandedViewport(in geometry: GeometryProxy) -> CGRect {
+        guard isDuoDevice else { return CGRect(origin: .zero, size: geometry.size) }
+        // Preserve the native horizontal safe area beside the status/control
+        // rail, but center vertically in the display, including when a keyboard
+        // is dismissing. The normal left-pane preview keeps its own layout.
+        let insets = geometry.safeAreaInsets
+        return CGRect(x: 0, y: -insets.top, width: geometry.size.width,
+                      height: geometry.size.height + insets.top + insets.bottom)
     }
 
     private func togglePhotoExpansion() {
         guard hasFinishedEntry else { return }
         if !isPhotoExpanded { onInspectPhoto() }
-        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.24)) {
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.20)) {
             isPhotoExpanded.toggle()
         }
     }
@@ -322,6 +337,9 @@ struct PostPhotoReviewView<Details: View>: View {
         .frame(maxWidth: .infinity)
         .background(Color.black)
         .opacity(revealsDetails ? 1 : 0)
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+            footerHeight = $0
+        }
     }
 
     @MainActor

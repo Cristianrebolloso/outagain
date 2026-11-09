@@ -149,8 +149,8 @@ struct ProfileSettingsView: View {
                                     .background {
                                         if isSelected {
                                             Circle()
-                                                .fill(RadialGradient(colors: [choice.color.opacity(0.36), .clear], center: .center, startRadius: 16, endRadius: 34))
-                                                .frame(width: 68, height: 68)
+                                                .fill(RadialGradient(colors: [choice.color.opacity(0.28), .clear], center: .center, startRadius: 16, endRadius: 28))
+                                                .frame(width: 56, height: 56)
                                         }
                                     }
 
@@ -167,7 +167,7 @@ struct ProfileSettingsView: View {
                     }
                 }
                 // The halo fades to transparent inside these bounds.
-                .padding(.vertical, 24)
+                .padding(.vertical, 18)
                 .padding(.horizontal, 2)
                 }
                 .contentMargins(.horizontal, 18, for: .scrollContent)
@@ -238,8 +238,8 @@ struct ProfileSettingsView: View {
                                         case .blue:     return Color(hex: "#0EA5E9")
                                         case .standard: return store.accentColorChoice.color
 }
-                                        }().opacity(isSelected ? 0.36 : 0), .clear], center: .center, startRadius: 18, endRadius: 44))
-                                            .frame(width: 88, height: 88)
+                                        }().opacity(isSelected ? 0.28 : 0), .clear], center: .center, startRadius: 18, endRadius: 36))
+                                            .frame(width: 72, height: 72)
                                     }
 
                                 switch theme {
@@ -425,7 +425,7 @@ struct ProfileSettingsView: View {
                     }
                 }
                 // Keep the finite halo inside the scroll viewport.
-                .padding(.vertical, 26)
+                .padding(.vertical, 20)
                 .padding(.horizontal, 2)
                 }
                 .contentMargins(.horizontal, 18, for: .scrollContent)

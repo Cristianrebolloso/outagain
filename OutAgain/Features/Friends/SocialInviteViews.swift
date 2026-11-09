@@ -9,32 +9,19 @@ struct SocialInviteActions: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 12) {
-                Button { isSharing = true } label: {
-                    Label("Invite friends", systemImage: "qrcode")
-                        .font(AppTypography.button)
-                        .frame(maxWidth: .infinity, minHeight: 48)
-                }
-                .buttonStyle(.glass)
-                .tint(.white)
-                .accessibilityIdentifier("friends.invite.share")
-
-                Button {
-                    store.isSocialInvitePresented = true
-                } label: {
-                    Label("Use code", systemImage: "link")
-                        .font(AppTypography.button)
-                        .frame(minHeight: 48)
-                }
-                .buttonStyle(.glass)
-                .tint(.white)
-                .accessibilityIdentifier("friends.invite.redeem")
+            Button { isSharing = true } label: {
+                Label("Invite friends", systemImage: "qrcode")
+                    .font(AppTypography.button)
+                    .frame(maxWidth: .infinity, minHeight: 48)
             }
+            .buttonStyle(.glass)
+            .tint(.white)
+            .accessibilityIdentifier("friends.invite.share")
             if store.pendingSocialInviteCode != nil {
                 Button {
                     store.isSocialInvitePresented = true
                 } label: {
-                    Label("Continue your invite", systemImage: "person.crop.circle.badge.plus")
+                    Label("View invite", systemImage: "person.crop.circle.badge.plus")
                         .font(AppTypography.button)
                 }
                 .foregroundStyle(.white)
@@ -159,7 +146,6 @@ struct ShareSocialInviteView: View {
 struct RedeemSocialInviteView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
-    @State private var input = ""
     @State private var invite: SocialInvite?
     @State private var isWorking = false
     @State private var errorMessage: String?
@@ -183,14 +169,6 @@ struct RedeemSocialInviteView: View {
                             .buttonStyle(.glassProminent)
                             .foregroundStyle(AppTheme.foregroundOnAccent(store.accentColorChoice.color))
                     } else {
-                        TextField("Paste invite link or code", text: $input, axis: .vertical)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .font(AppTypography.body)
-                            .padding(16)
-                            .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 20))
-                            .accessibilityIdentifier("friends.invite.code")
-                            .onChange(of: input) { _, _ in invite = nil; errorMessage = nil }
                         if let invite {
                             NightPanel(cornerRadius: 28, padding: 20) {
                                 VStack(alignment: .leading, spacing: 10) {
@@ -219,19 +197,21 @@ struct RedeemSocialInviteView: View {
                             .foregroundStyle(AppTheme.foregroundOnAccent(store.accentColorChoice.color))
                             .disabled(isWorking || store.viewer == nil || invite.inviterID == store.viewer?.id)
                             .accessibilityIdentifier("friends.invite.accept")
-                        } else {
-                            Button { Task { await resolveInvite() } } label: {
-                                HStack {
-                                    if isWorking { ProgressView() }
-                                    Text("Find invite")
-                                }.frame(maxWidth: .infinity, minHeight: 48)
-                            }
-                            .buttonStyle(.glassProminent)
-                            .foregroundStyle(AppTheme.foregroundOnAccent(store.accentColorChoice.color))
-                            .disabled(isWorking || input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        } else if isWorking {
+                            ProgressView("Loading invite…")
+                                .frame(maxWidth: .infinity, minHeight: 96)
+                        } else if store.pendingSocialInviteCode == nil {
+                            Text("Open the invite link your friend shared.")
+                                .font(AppTypography.body)
+                                .foregroundStyle(AppTheme.softText)
                         }
                         if let errorMessage {
                             Text(errorMessage).font(AppTypography.rowSubtitle).foregroundStyle(AppTheme.softText)
+                            if invite == nil, store.pendingSocialInviteCode != nil {
+                                Button("Try again") { Task { await resolveInvite() } }
+                                    .buttonStyle(.glass)
+                                    .disabled(isWorking)
+                            }
                         }
                     }
                 }
@@ -245,10 +225,9 @@ struct RedeemSocialInviteView: View {
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
         }
         .task(id: store.pendingSocialInviteCode) {
-            if let code = store.pendingSocialInviteCode {
+            if store.pendingSocialInviteCode != nil {
                 acceptance = nil
                 invite = nil
-                input = code
                 await resolveInvite()
             }
         }
@@ -256,8 +235,8 @@ struct RedeemSocialInviteView: View {
 
     private func resolveInvite() async {
         guard let accountID = store.viewer?.id else { return }
-        guard let code = SocialInviteCode.normalized(input) else {
-            errorMessage = "That doesn’t look like an Out Again invite. Paste the full link your friend shared."
+        guard let code = SocialInviteCode.normalized(store.pendingSocialInviteCode ?? "") else {
+            errorMessage = "This invite is unavailable. Ask your friend for a new link."
             return
         }
         let operation = UUID()
@@ -268,17 +247,18 @@ struct RedeemSocialInviteView: View {
         do {
             let result = try await store.backend.resolveSocialInvite(token: code)
             guard !Task.isCancelled, requestID == operation, store.viewer?.id == accountID,
-                  code == SocialInviteCode.normalized(input) else { return }
+                  code == SocialInviteCode.normalized(store.pendingSocialInviteCode ?? "") else { return }
             invite = result
         } catch {
             guard !Task.isCancelled, requestID == operation, store.viewer?.id == accountID,
-                  code == SocialInviteCode.normalized(input) else { return }
+                  code == SocialInviteCode.normalized(store.pendingSocialInviteCode ?? "") else { return }
             errorMessage = "This invite may have expired or is no longer available. Check your connection or ask your friend for a new link."
         }
     }
 
     private func acceptInvite() async {
-        guard !isWorking, let invite, let accountID = store.viewer?.id else { return }
+        guard !isWorking, let invite, let accountID = store.viewer?.id,
+              invite.token == SocialInviteCode.normalized(store.pendingSocialInviteCode ?? "") else { return }
         let operation = UUID()
         requestID = operation
         isWorking = true
@@ -287,7 +267,7 @@ struct RedeemSocialInviteView: View {
         do {
             let result = try await store.backend.acceptSocialInvite(token: invite.token)
             guard !Task.isCancelled, requestID == operation, store.viewer?.id == accountID,
-                  invite.token == SocialInviteCode.normalized(input) else { return }
+                  invite.token == SocialInviteCode.normalized(store.pendingSocialInviteCode ?? "") else { return }
             acceptance = result
             store.clearPendingSocialInvite(matching: invite.token)
             await store.refreshAppData(silenceErrors: true)
@@ -295,7 +275,7 @@ struct RedeemSocialInviteView: View {
         } catch {
             guard !Task.isCancelled else { return }
             guard requestID == operation, store.viewer?.id == accountID,
-                  invite.token == SocialInviteCode.normalized(input) else { return }
+                  invite.token == SocialInviteCode.normalized(store.pendingSocialInviteCode ?? "") else { return }
             errorMessage = "Couldn’t accept this invite. Please try again."
         }
     }
