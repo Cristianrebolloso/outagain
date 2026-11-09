@@ -60,7 +60,7 @@ struct AdminHomeView: View {
                 .scrollContentBackground(.hidden)
                 .modifier(MainPageSurface())
                 .modifier(DuoPageHeader(title: "Admin"))
-                .refreshable {
+                .glassPullToRefresh {
                     await refreshAdminOverview(forceReports: true)
                 }
                 .task {

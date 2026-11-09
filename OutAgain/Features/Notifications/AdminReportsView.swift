@@ -187,7 +187,7 @@ struct AdminReportsView: View {
             AmbientBackground()
                 .ignoresSafeArea()
         }
-        .refreshable {
+        .glassPullToRefresh(isRefreshing: store.isLoadingAdminReports) {
             store.loadAdminReportsNextPage(reset: true)
         }
         .task {

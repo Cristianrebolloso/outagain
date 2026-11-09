@@ -23,7 +23,8 @@ struct OutAgainApp: App {
         ]
 
         #if DEBUG
-        if ProcessInfo.processInfo.arguments.contains("--duo-layout-preview") {
+        if ProcessInfo.processInfo.arguments.contains("--duo-layout-preview")
+            || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
             _store = State(initialValue: DuoLayoutFixtures.makeStore())
             _configurationError = State(initialValue: nil)
             return
@@ -78,12 +79,22 @@ struct OutAgainApp: App {
                         .environment(store)
                         .environment(permissionCenter)
                         .environment(feedAds)
+                        .task(id: store.viewer?.id) {
+                            guard !store.isLayoutPreview else { return }
+                            await store.purchases.configure(accountID: store.viewer?.id, backend: store.backend)
+                        }
+                        .onChange(of: store.purchases.revision) { _, _ in
+                            store.enforceBackgroundAccess()
+                        }
                         .onChange(of: store.viewer?.id) { _, _ in feedAds.clearFeed() }
                         .onChange(of: store.areFeedAdsEnabled) { _, enabled in
                             if !enabled { feedAds.clearFeed() }
                         }
                         .onOpenURL { url in
                             store.handleIncomingURL(url)
+                        }
+                        .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
+                            if let url = activity.webpageURL { store.handleIncomingURL(url) }
                         }
                 }
             }

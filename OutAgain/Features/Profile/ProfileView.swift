@@ -25,7 +25,6 @@ struct ProfileView: View {
     @State private var isShowingProfileSavedConfirmation = false
     @State private var isTabRefreshing = false
     @State private var profileScrollOffset: CGFloat = 0
-    @State private var didTriggerPullRefresh = false
 
     @State private var viewerProfilePosts: [MomentPost] = []
     @State private var viewerProfilePostCount: Int?
@@ -129,15 +128,8 @@ struct ProfileView: View {
             .coordinateSpace(name: "profileScroll")
             .onPreferenceChange(ProfileScrollOffsetKey.self) { offset in
                 profileScrollOffset = offset
-                if offset > 60 && !isTabRefreshing && !didTriggerPullRefresh {
-                    didTriggerPullRefresh = true
-                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                    Task {
-                        await runManualRefresh()
-                    }
-                }
-                if offset <= 0 { didTriggerPullRefresh = false }
             }
+            .glassPullToRefresh(isRefreshing: isTabRefreshing) { await runManualRefresh() }
             .onGeometryChange(for: CGFloat.self) {
                 $0.size.width
             } action: { width in
@@ -161,13 +153,6 @@ struct ProfileView: View {
                             .tint(.white)
                             .accessibilityIdentifier("profile.settings")
                     }
-                }
-            }
-            .overlay(alignment: .top) {
-                if isTabRefreshing {
-                    MainTabRefreshIndicator()
-                        .padding(.top, 8)
-                        .transition(.move(edge: .top).combined(with: .opacity))
                 }
             }
             .overlay(alignment: .top) {
@@ -214,6 +199,10 @@ struct ProfileView: View {
                     loadedViewerPostsForID = viewer.id
                     viewerHasMorePosts = false
                     #if DEBUG
+                    if ProcessInfo.processInfo.arguments.contains("--plus-settings-preview") {
+                        if store.isDuoDevice { pageRoute = .settings }
+                        else { store.profileOverlayRoute = .settings }
+                    }
                     if ProcessInfo.processInfo.arguments.contains("--profile-post-preview") {
                         detailPost = viewerProfilePosts.first
                     }
@@ -316,6 +305,7 @@ struct ProfileView: View {
     }
 
     private func runManualRefresh() async {
+        guard !isTabRefreshing else { return }
         let refreshStartedAt = Date()
         await MainActor.run {
             withAnimation(.easeInOut(duration: 0.18)) {
@@ -838,7 +828,7 @@ struct SharedProfileHeader<ActionContent: View>: View {
     }
 
     private var usernameAccessibilityLabel: String {
-        "@\(profile.username)\(profile.isVerified ? ", verified" : "")"
+        "@\(profile.username)\(store.purchases.isPlusMember(profile.id) ? ", Out Again+ member" : profile.isVerified ? ", verified" : "")"
     }
 
     @ViewBuilder
@@ -1155,7 +1145,9 @@ struct ProfileStatsCards: View {
 
     var body: some View {
         VStack(spacing: 12) {
+            // Drink tracking stays near the top; streaks and rank are secondary.
             nightsHero
+            drinkTotalsCard
 
             HStack(spacing: 12) {
                 streakCard
@@ -1163,7 +1155,6 @@ struct ProfileStatsCards: View {
             }
 
             friendRankCard
-            drinkTotalsCard
         }
         .sheet(isPresented: $isDrinkStatsPresented) {
             DrinkStatsBreakdownSheet(

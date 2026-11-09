@@ -69,19 +69,89 @@ enum MainTabRefreshFeedback {
 }
 
 struct MainTabRefreshIndicator: View {
-    @Environment(\.appAccent) private var accent
+    var progress: CGFloat = 1
+    var isRefreshing = true
 
     var body: some View {
-        ProgressView()
-            .progressViewStyle(.circular)
-            .tint(accent)
-            .controlSize(.regular)
-            .padding(10)
-            .background(.black.opacity(0.58), in: Circle())
-            .overlay(Circle().strokeBorder(AppTheme.line, lineWidth: 1))
-            .shadow(color: .black.opacity(0.24), radius: 12, y: 6)
+        ZStack {
+            if isRefreshing {
+                ProgressView().progressViewStyle(.circular).tint(.white)
+            } else {
+                Circle().trim(from: 0, to: min(0.95, max(0.02, progress)))
+                    .stroke(.white, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                    .rotationEffect(.degrees(-90 + 180 * Double(progress)))
+                    .frame(width: 19, height: 19)
+            }
+        }
+            .frame(width: 44, height: 44)
+            .glassEffect(.regular, in: Circle())
             .accessibilityLabel("Refreshing")
             .allowsHitTesting(false)
+    }
+}
+
+private struct GlassPullToRefresh: ViewModifier {
+    let isRefreshing: Bool
+    let action: () async -> Void
+    @State private var pull: CGFloat = 0
+    @State private var isInteracting = false
+    @State private var isArmed = false
+    @State private var refreshTask: Task<Void, Never>?
+
+    func body(content: Content) -> some View {
+        content
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                max(0, -(geometry.contentOffset.y + geometry.contentInsets.top))
+            } action: { _, distance in
+                pull = distance
+                if isInteracting && !isRefreshing {
+                    let armed = distance >= 60
+                    if armed && !isArmed { UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
+                    isArmed = armed
+                }
+            }
+            .onScrollPhaseChange { oldPhase, newPhase in
+                isInteracting = newPhase == .interacting
+                if oldPhase == .interacting, newPhase != .tracking, isArmed, !isRefreshing {
+                    isArmed = false
+                    refreshTask = Task { await action() }
+                }
+            }
+            .overlay(alignment: .top) {
+                if isRefreshing || (isInteracting && pull > 6) {
+                    MainTabRefreshIndicator(progress: min(1, pull / 60), isRefreshing: isRefreshing)
+                        .padding(.top, 8)
+                        .offset(y: isRefreshing ? 0 : min(28, pull * 0.3))
+                        .transition(.opacity)
+                }
+            }
+            .onDisappear { refreshTask?.cancel() }
+    }
+}
+
+extension View {
+    func glassPullToRefresh(isRefreshing: Bool, action: @escaping () async -> Void) -> some View {
+        modifier(GlassPullToRefresh(isRefreshing: isRefreshing, action: action))
+    }
+
+    func glassPullToRefresh(action: @escaping () async -> Void) -> some View {
+        modifier(ManagedGlassRefresh(action: action))
+    }
+}
+
+private struct ManagedGlassRefresh: ViewModifier {
+    let action: () async -> Void
+    @State private var isRefreshing = false
+
+    func body(content: Content) -> some View {
+        content.glassPullToRefresh(isRefreshing: isRefreshing) {
+            guard !isRefreshing else { return }
+            let startedAt = Date()
+            withAnimation(.easeInOut(duration: 0.18)) { isRefreshing = true }
+            await action()
+            await MainTabRefreshFeedback.waitForMinimumVisibleDuration(since: startedAt)
+            withAnimation(.easeInOut(duration: 0.18)) { isRefreshing = false }
+        }
     }
 }
 
@@ -209,6 +279,7 @@ struct AvatarPile: View {
 struct VerifiedBadgeView: View {
     var size: CGFloat = 12
     var offsetY: CGFloat = 0  // kept for API compatibility; no longer applied
+    var isPlusMember = false
 
     var body: some View {
         Image(systemName: "checkmark.seal.fill")
@@ -218,11 +289,12 @@ struct VerifiedBadgeView: View {
             .shadow(color: .black.opacity(0.18), radius: 4, y: 1)
             .offset(x: size * 0.06)
             .frame(width: size, height: size)
-            .accessibilityLabel("Verified")
+            .accessibilityLabel(isPlusMember ? "Out Again+ member" : "Verified")
     }
 }
 
 struct VerifiedProfileLabel<Label: View>: View {
+    @Environment(AppStore.self) private var store
     let profile: UserProfile
     var spacing: CGFloat = 6
     var badgeSize: CGFloat = 12
@@ -245,8 +317,8 @@ struct VerifiedProfileLabel<Label: View>: View {
         HStack(alignment: .center, spacing: spacing) {
             label()
 
-            if profile.isVerified {
-                VerifiedBadgeView(size: badgeSize, offsetY: 0)
+            if profile.isVerified || store.purchases.isPlusMember(profile.id) {
+                VerifiedBadgeView(size: badgeSize, offsetY: 0, isPlusMember: store.purchases.isPlusMember(profile.id))
                     .fixedSize()
                     .alignmentGuide(.firstTextBaseline) { d in d[VerticalAlignment.center] }
             }
@@ -256,6 +328,7 @@ struct VerifiedProfileLabel<Label: View>: View {
 }
 
 struct VerifiedUsernameLabel: View {
+    @Environment(AppStore.self) private var store
     let profile: UserProfile
     var font: Font = AppTypography.usernameCompact
     var color: Color = AppTheme.softText
@@ -270,8 +343,8 @@ struct VerifiedUsernameLabel: View {
                 .foregroundStyle(color)
                 .lineLimit(1)
 
-            if profile.isVerified {
-                VerifiedBadgeView(size: badgeSize)
+            if profile.isVerified || store.purchases.isPlusMember(profile.id) {
+                VerifiedBadgeView(size: badgeSize, isPlusMember: store.purchases.isPlusMember(profile.id))
                     .alignmentGuide(.firstTextBaseline) { d in d[VerticalAlignment.center] }
                     .fixedSize()
             }

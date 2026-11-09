@@ -38,49 +38,35 @@ extension AppStore {
 
     // MARK: - Mutations (optimistic + backend sync)
 
-    /// Creates a group optimistically on the local store, then persists to
-    /// the backend. On failure the group is removed and the error is surfaced.
-    func createGroup(name: String, friendIDs: [UUID]) {
-        guard let viewerID = viewer?.id else { return }
-        let group = NightGroup(
-            id: UUID(),
-            name: name,
-            creatorID: viewerID,
-            memberIDs: [viewerID] + friendIDs,
-            createdAt: .now
-        )
-        nightGroups.append(group)
-
+    /// Wait for persistence before offering a working group invite. A group can
+    /// start with just its creator; friends may join from the shared link later.
+    func createGroup(name: String, friendIDs: [UUID]) async -> NightGroup? {
+        guard let viewerID = viewer?.id else { return nil }
         let creator = viewerIdentity
-        Task {
-            do {
-                try await backend.createNightGroup(group)
-                // Notify every member except the creator. The server's existing
-                // APNs dispatch trigger fires on each inserted notification row,
-                // so this single REST insert is all that's needed to deliver
-                // the push to all added members.
-                let recipientIDs = friendIDs.filter { $0 != viewerID }
-                if !recipientIDs.isEmpty {
-                    do {
-                        try await backend.insertGroupNotifications(
-                            group: group,
-                            recipientIDs: recipientIDs,
-                            creator: creator
-                        )
-                    } catch {
-                        await MainActor.run {
-                            socialErrorMessage = "Group created, but member notifications couldn't be sent."
-                        }
-                    }
-                }
-                await syncGroupsFromBackend()
-            } catch {
-                // Roll back the optimistic insert on failure.
-                await MainActor.run {
-                    nightGroups.removeAll { $0.id == group.id }
-                    socialErrorMessage = "Couldn't create the group. Please try again."
+        let memberIDs = Array(Set(friendIDs.filter { $0 != viewerID }))
+        let group = NightGroup(
+            id: UUID(), name: name, creatorID: viewerID,
+            memberIDs: [viewerID] + memberIDs, createdAt: .now
+        )
+        do {
+            try await backend.createNightGroup(group)
+            guard viewer?.id == viewerID else { return nil }
+            nightGroups.append(group)
+            if !memberIDs.isEmpty {
+                do {
+                    try await backend.insertGroupNotifications(
+                        group: group, recipientIDs: memberIDs, creator: creator
+                    )
+                } catch {
+                    socialErrorMessage = "Group created, but member notifications couldn’t be sent."
                 }
             }
+            await syncGroupsFromBackend()
+            return group
+        } catch {
+            guard viewer?.id == viewerID else { return nil }
+            socialErrorMessage = "Couldn’t create the group. Please try again."
+            return nil
         }
     }
 

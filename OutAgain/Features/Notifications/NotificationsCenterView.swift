@@ -13,7 +13,7 @@ struct ActivityView: View {
     @State private var isShowingRefreshConfirmation = false
     @State private var isTabRefreshing = false
     @State private var isTitleScrolled = false
-    @State private var didTriggerPullRefresh = false
+    @State private var expandedNotificationBundles: Set<String> = []
 
     private enum ActiveNotificationSheet: Identifiable {
         /// Show the post card; optionally auto-open comments with a highlighted comment.
@@ -85,23 +85,20 @@ struct ActivityView: View {
                             .frame(maxWidth: .infinity)
                             .listRowInsets(EdgeInsets(top: 6, leading: horizontalPadding, bottom: 14, trailing: horizontalPadding))
 
-                        ForEach(section.items) { notification in
-                            notificationRow(notification, now: now)
-                                .frame(maxWidth: maximumWidth)
-                                .frame(maxWidth: .infinity)
-                                .listRowInsets(EdgeInsets(top: 0, leading: horizontalPadding, bottom: 12, trailing: horizontalPadding))
-                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                    Button(role: .destructive) {
-                                        withAnimation(.snappy(duration: 0.24)) {
-                                            store.dismissNotification(notification)
-                                            if selectedNotificationID == notification.id {
-                                                selectedNotificationID = nil
-                                            }
-                                        }
-                                    } label: {
-                                        Label("Dismiss", systemImage: "trash")
+                        ForEach(ActivityNotificationBundle.make(from: section.items)) { bundle in
+                            if bundle.notifications.count == 1 {
+                                notificationListRow(bundle.latest, now: now, horizontalPadding: horizontalPadding, maximumWidth: maximumWidth)
+                            } else {
+                                notificationBundleRow(bundle, now: now)
+                                    .frame(maxWidth: maximumWidth)
+                                    .frame(maxWidth: .infinity)
+                                    .listRowInsets(EdgeInsets(top: 0, leading: horizontalPadding, bottom: 12, trailing: horizontalPadding))
+                                if expandedNotificationBundles.contains(bundle.id) {
+                                    ForEach(bundle.notifications) { notification in
+                                        notificationListRow(notification, now: now, horizontalPadding: horizontalPadding + 10, maximumWidth: maximumWidth)
                                     }
                                 }
+                            }
                         }
                     }
                 }
@@ -119,13 +116,78 @@ struct ActivityView: View {
             -(geometry.contentOffset.y + geometry.contentInsets.top)
         } action: { _, offset in
             isTitleScrolled = offset < -8
-            if offset > 60 && !isTabRefreshing && !didTriggerPullRefresh {
-                didTriggerPullRefresh = true
-                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                Task { await runManualRefresh() }
-            }
-            if offset <= 0 { didTriggerPullRefresh = false }
         }
+        .glassPullToRefresh(isRefreshing: isTabRefreshing) { await runManualRefresh() }
+    }
+
+    private func notificationListRow(
+        _ notification: AppNotification,
+        now: Date,
+        horizontalPadding: CGFloat,
+        maximumWidth: CGFloat
+    ) -> some View {
+        notificationRow(notification, now: now)
+            .frame(maxWidth: maximumWidth)
+            .frame(maxWidth: .infinity)
+            .listRowInsets(EdgeInsets(top: 0, leading: horizontalPadding, bottom: 12, trailing: horizontalPadding))
+            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                Button(role: .destructive) {
+                    withAnimation(.snappy(duration: 0.24)) {
+                        store.dismissNotification(notification)
+                        if selectedNotificationID == notification.id {
+                            selectedNotificationID = nil
+                        }
+                    }
+                } label: {
+                    Label("Dismiss", systemImage: "trash")
+                }
+            }
+    }
+
+    private func notificationBundleRow(_ bundle: ActivityNotificationBundle, now: Date) -> some View {
+        let expanded = expandedNotificationBundles.contains(bundle.id)
+        let latest = bundle.latest
+        return Button {
+            withAnimation(.snappy(duration: 0.24)) {
+                if expanded { expandedNotificationBundles.remove(bundle.id) }
+                else { expandedNotificationBundles.insert(bundle.id) }
+            }
+        } label: {
+            NightPanel {
+                HStack(spacing: 14) {
+                    if let actor = latest.actor {
+                        AvatarView(avatar: actor.avatar, size: 42)
+                    } else {
+                        Image(systemName: "bubble.left.and.bubble.right.fill")
+                            .foregroundStyle(accent)
+                            .frame(width: 42, height: 42)
+                    }
+                    VStack(alignment: .leading, spacing: 5) {
+                        notificationTitle(latest, now: now)
+                        Text("\(bundle.notifications.count) updates on this post")
+                            .font(AppTypography.footnoteMedium)
+                            .foregroundStyle(.white.opacity(0.85))
+                        Text(NotificationDates.activityLabel(for: latest.createdAt, now: now))
+                            .font(AppTypography.caption)
+                            .foregroundStyle(AppTheme.softText)
+                            .accessibilityLabel(latest.createdAt.formatted(date: .complete, time: .shortened))
+                    }
+                    Spacer(minLength: 0)
+                    VStack(spacing: 10) {
+                        if bundle.hasUnread {
+                            Circle().fill(accent).frame(width: 8, height: 8)
+                        }
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(AppTheme.softText)
+                    }
+                }
+            }
+            .contentShape(RoundedRectangle(cornerRadius: AppLayout.panelRadius, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint(expanded ? "Collapse updates" : "Expand to open or dismiss each update")
+        .accessibilityValue(expanded ? "Expanded" : "Collapsed")
     }
 
     private func phoneActivity(at now: Date) -> some View {
@@ -160,13 +222,6 @@ struct ActivityView: View {
             // does not depend on the native tab container staying transparent.
             .scrollContentBackground(.hidden)
             .modifier(MainPageSurface())
-            .overlay(alignment: .top) {
-                if isTabRefreshing {
-                    MainTabRefreshIndicator()
-                        .padding(.top, 8)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                }
-            }
             .onAppear {
                 if store.selectedTab == .activity {
                     store.markActivityAsSeen()
@@ -260,13 +315,6 @@ struct ActivityView: View {
                 // does not depend on the native tab container staying transparent.
                 .scrollContentBackground(.hidden)
                 .modifier(MainPageSurface())
-                .overlay(alignment: .top) {
-                    if isTabRefreshing {
-                        MainTabRefreshIndicator()
-                            .padding(.top, 8)
-                            .transition(.move(edge: .top).combined(with: .opacity))
-                    }
-                }
                 .onAppear {
                     if store.selectedTab == .activity {
                         store.markActivityAsSeen()
@@ -374,6 +422,7 @@ struct ActivityView: View {
     }
 
     private func runManualRefresh() async {
+        guard !isTabRefreshing else { return }
         let refreshStartedAt = Date()
         await MainActor.run {
             withAnimation(.easeInOut(duration: 0.18)) {
@@ -433,7 +482,7 @@ struct ActivityView: View {
     @ViewBuilder
     private func notificationTitle(_ notification: AppNotification, now: Date) -> some View {
         let actor = notification.actor
-        let isVerified = actor?.isVerified == true
+        let isVerified = actor?.isVerified == true || actor.map { store.purchases.isPlusMember($0.id) } == true
         let actorName = actor?.displayName ?? ""
         let title = notification.headline(at: now)
 

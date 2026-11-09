@@ -85,6 +85,14 @@ extension AppStore {
     }
 
     static func loadBackgroundTheme() -> BackgroundTheme {
+        // One-time local companion to the account reset. Accent preferences
+        // have separate keys and are deliberately never changed here.
+        let resetKey = "OutAgain.backgroundPurchaseReset.v1"
+        if !UserDefaults.standard.bool(forKey: resetKey) {
+            UserDefaults.standard.set(BackgroundTheme.standard.rawValue, forKey: "OutAgain.backgroundTheme")
+            UserDefaults.standard.set(true, forKey: resetKey)
+            return .standard
+        }
         guard let raw = UserDefaults.standard.string(forKey: "OutAgain.backgroundTheme"),
               let theme = BackgroundTheme(rawValue: raw)
         else { return .standard }

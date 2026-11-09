@@ -133,7 +133,7 @@ enum DuoLayoutFixtures {
             store.posts[0].commentCount = 2
         }
         if ProcessInfo.processInfo.arguments.contains("--post-actions-preview") {
-            // Reproduce the crowded Like / Dislike / Comment footer locally.
+            // Reproduce the post action footer locally.
             store.viewer?.isVerified = true
             store.posts[0].caption = ""
             store.posts[0].media.photoData = continuityPhoto(index: 0)

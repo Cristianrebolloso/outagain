@@ -5,6 +5,7 @@
 	<key>com.apple.developer.associated-domains</key>
 	<array>
 		<string>webcredentials:outagain.app</string>
+		<string>applinks:cristianrebolloso.github.io</string>
 	</array>
 	<key>aps-environment</key>
 	<string>production</string>

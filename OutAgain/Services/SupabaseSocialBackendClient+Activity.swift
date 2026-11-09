@@ -156,6 +156,7 @@ extension SupabaseSocialBackendClient {
     }
 
     func recordReaction(_ kind: ReactionKind, to post: MomentPost, by viewer: UserProfile) async throws -> OutboundNotificationDelivery? {
+        guard ReactionKind.allCases.contains(kind) else { return nil }
         let payload = [
             SupabaseReactionRecord(
                 post_id: post.id,
@@ -174,15 +175,8 @@ extension SupabaseSocialBackendClient {
 
         guard post.author.id != viewer.id else { return nil }
 
-        let notificationTitle: String
-        let notificationDetail: String
-        if kind == .dislike {
-            notificationTitle = "\(viewer.displayName) did not fw your post"
-            notificationDetail = "\(viewer.displayName) did not fw your post"
-        } else {
-            notificationTitle = "\(viewer.displayName) liked your post"
-            notificationDetail = "\(viewer.displayName) liked your \(post.drink.map { "\($0.name) " } ?? "")post."
-        }
+        let notificationTitle = "\(viewer.displayName) liked your post"
+        let notificationDetail = "\(viewer.displayName) liked your \(post.drink.map { "\($0.name) " } ?? "")post."
 
         return OutboundNotificationDelivery(
             id: UUID(),

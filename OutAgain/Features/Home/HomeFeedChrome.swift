@@ -128,3 +128,70 @@ struct LocalFeedEmptyState: View {
         .padding(.horizontal, AppLayout.screenPadding)
     }
 }
+
+
+/// Inserts labels at night boundaries without sorting, regrouping, or changing
+/// post identities. Ad positions and Duo's tracked post frames stay unchanged.
+struct HomeFeedPeriodHeading: View {
+    let date: Date
+    let previousDate: Date?
+
+    var body: some View {
+        let window = AppStore.tonightWindow(reference: .now)
+        let isTonight = window.contains(date)
+        if previousDate == nil || previousDate.map({ window.contains($0) }) != isTonight {
+            HStack(spacing: 12) {
+                Text(isTonight ? "Tonight" : "Earlier")
+                    .font(AppTypography.metadataEmphasis)
+                    .foregroundStyle(AppTheme.softText)
+                    .textCase(.uppercase)
+                    .tracking(1.2)
+                Rectangle()
+                    .fill(AppTheme.line)
+                    .frame(height: 1)
+            }
+            .padding(.horizontal, AppLayout.screenPadding)
+            .padding(.top, 4)
+            .accessibilityAddTraits(.isHeader)
+        }
+    }
+}
+
+struct FriendsFeedEmptyState: View {
+    @Environment(AppStore.self) private var store
+    @Environment(\.appAccent) private var accent
+
+    var body: some View {
+        NightPanel(cornerRadius: 28, padding: 20) {
+            VStack(alignment: .leading, spacing: 14) {
+                Image(systemName: "camera.fill")
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundStyle(accent)
+                Text("Your night starts here")
+                    .font(AppTypography.sectionTitle)
+                    .foregroundStyle(.white)
+                Text("Post what you're drinking and see what your friends are up to.")
+                    .font(AppTypography.rowSubtitle)
+                    .foregroundStyle(AppTheme.softText)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 12) {
+                    Button { store.openPostFlow() } label: {
+                        Label("Post", systemImage: "camera.fill")
+                            .font(AppTypography.button)
+                            .frame(minHeight: 36)
+                    }
+                    .buttonStyle(.glassProminent)
+                    .tint(accent)
+                    Button { store.selectedTab = .friends } label: {
+                        Text("Find Friends")
+                            .font(AppTypography.button)
+                            .frame(minHeight: 36)
+                    }
+                    .buttonStyle(.glass)
+                    .tint(.white)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}

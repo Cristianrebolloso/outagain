@@ -14,6 +14,7 @@ struct NightRecapView: View {
     @State private var savedPostIDs: Set<UUID> = []
     @State private var saveErrorMessage: String?
     @State private var needsPhotoSettings = false
+    @State private var isSharingRecap = false
 
     var body: some View {
         recapContent
@@ -37,6 +38,7 @@ struct NightRecapView: View {
                         } else if posts.isEmpty {
                             ContentUnavailableView("No photos to show", systemImage: "photo.stack")
                         } else {
+                            recapSummary
                             LazyVGrid(columns: columns(for: geometry.size.width), alignment: .leading, spacing: 24) {
                                 ForEach(posts) { post in
                                     Button { selectedPost = post } label: {
@@ -105,6 +107,29 @@ struct NightRecapView: View {
                     selectedProfile = profile
                 }
             }
+            .sheet(isPresented: $isSharingRecap) {
+                NightRecapShareView(posts: posts, date: route.start)
+            }
+        }
+    }
+
+    private var recapSummary: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("\(posts.count) \(posts.count == 1 ? "photo" : "photos") · \(Set(posts.map(\.author.id)).count) \(Set(posts.map(\.author.id)).count == 1 ? "person" : "people")")
+                .font(AppTypography.body)
+                .foregroundStyle(.secondary)
+            Button {
+                isSharingRecap = true
+            } label: {
+                Label("Share a recap", systemImage: "square.and.arrow.up")
+                    .font(AppTypography.button)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+            }
+            .buttonStyle(.glass)
+            .tint(.white)
+            .accessibilityHint("Choose photos and preview a collage before sharing")
+            .accessibilityIdentifier("night.recap.share")
         }
     }
 

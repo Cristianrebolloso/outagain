@@ -15,10 +15,10 @@ struct HomeFeedView: View {
     @State private var activeSheet: ActiveHomeSheet?
     @State private var tonightAuthorTarget: UUID?   // author ID whose tonight posts to show
     @State private var homeTabRefreshTask: Task<Void, Never>?
+    @State private var isTabRefreshing = false
     /// Tracks scroll offset to detect a manual pull-to-refresh gesture.
     @State private var scrollOffset: CGFloat = 0
     /// Prevents rapid consecutive pull-to-refresh triggers.
-    @State private var didTriggerPullRefresh = false
     @State private var isInlineComments = false
     @State private var feedViewportHeight: CGFloat = 0
     @State private var feedItemFrames: [FeedVisibleItem: CGRect] = [:]
@@ -232,7 +232,7 @@ struct HomeFeedView: View {
                         // transport failure. Non-blocking: cached content is still
                         // visible below. Disappears automatically once connectivity
                         // is restored and a background refresh succeeds.
-                        if store.isOffline {
+                        if store.offlineNotice.isVisible {
                             HStack(spacing: 8) {
                                 Image(systemName: "wifi.slash")
                                     .font(.system(size: 13, weight: .semibold))
@@ -256,7 +256,7 @@ struct HomeFeedView: View {
                             HomeFeedScopeControl()
                                 .padding(.horizontal, AppLayout.screenPadding)
                         }
-                        if store.feedScope == .friends {
+                        if store.feedScope == .friends && (!store.homeFeedPosts.isEmpty || !store.nightGroups.isEmpty) {
                         TonightActivityStrip(
                             onFriendPostTap: { authorID in
                                 store.cacheProfilePosts(store.tonightPosts(for: authorID))
@@ -309,22 +309,10 @@ struct HomeFeedView: View {
                 }
                 .onPreferenceChange(ScrollOffsetKey.self) { offset in
                     scrollOffset = offset
-                    // Trigger refresh when pulled down past 60pt and not already refreshing.
-                    if offset > 60 && !didTriggerPullRefresh {
-                        didTriggerPullRefresh = true
-                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                        homeTabRefreshTask?.cancel()
-                        homeTabRefreshTask = Task {
-                            await runManualRefresh()
-                        }
-                    }
-                    // Reset trigger guard once scroll returns to top
-                    if offset <= 0 {
-                        didTriggerPullRefresh = false
-                    }
                 }
                 .scrollIndicators(.hidden)
                 .scrollBounceBehavior(.always, axes: .vertical)
+                .glassPullToRefresh(isRefreshing: isTabRefreshing) { await runManualRefresh() }
                 .scrollContentBackground(.hidden)
                 .modifier(HomeLocalDiscoveryRefresh())
                 .task {
@@ -470,6 +458,12 @@ struct HomeFeedView: View {
 
         LazyVStack(spacing: 22) {
             ForEach(Array(posts.enumerated()), id: \.element.id) { index, post in
+                if store.feedScope == .friends {
+                    HomeFeedPeriodHeading(
+                        date: post.createdAt,
+                        previousDate: index > 0 ? posts[index - 1].createdAt : nil
+                    )
+                }
                 MomentPostCard(
                     post: post,
                     isFocused: false,
@@ -532,19 +526,15 @@ struct HomeFeedView: View {
     }
 
     private var emptyFeedState: some View {
-        NightPanel(cornerRadius: 28, padding: 20) {
-            VStack(alignment: .leading, spacing: 10) {
-                Image(systemName: "moon.stars.fill")
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(store.accentColorChoice.color.opacity(0.85))
-                Text("No posts yet")
-                    .font(AppTypography.sectionTitle)
-                    .foregroundStyle(.white)
-            }
-        }
+        FriendsFeedEmptyState()
+            .padding(.horizontal, AppLayout.screenPadding)
     }
 
     private func runManualRefresh() async {
+        guard !isTabRefreshing else { return }
+        let startedAt = Date()
+        withAnimation(.easeOut(duration: 0.18)) { isTabRefreshing = true }
+        defer { withAnimation(.easeOut(duration: 0.18)) { isTabRefreshing = false } }
         if !store.isLayoutPreview { permissions.requestLocation() }
         if store.feedScope == .local {
             await store.refreshLocalFeed(at: permissions.currentLocationSnapshot, force: true)
@@ -552,6 +542,7 @@ struct HomeFeedView: View {
             await store.refreshAppData(silenceErrors: true)
             await store.refreshLocalFeed(at: permissions.currentLocationSnapshot, force: true)
         }
+        await MainTabRefreshFeedback.waitForMinimumVisibleDuration(since: startedAt)
     }
 }
 

@@ -120,6 +120,7 @@ struct AppRootView: View {
             store.isPostFlowPresented = false
             store.isMaddoxPlayerPresented = false
             store.pendingMaddoxPlayer = false
+            store.isSocialInvitePresented = false
         }
         .sheet(isPresented: $store.isMaddoxPlayerPresented) {
             MaddoxPlayerView()
@@ -139,6 +140,26 @@ struct AppRootView: View {
             case .recap(let recap):
                 NightRecapView(route: recap)
             }
+        }
+        .sheet(isPresented: $store.isSocialInvitePresented) {
+            RedeemSocialInviteView()
+                .presentationDetents([.large])
+                .appSheetDragHandle()
+        }
+        .onChange(of: store.isLive) { _, isLive in
+            if isLive { store.presentPendingSocialInvite() }
+        }
+        .onChange(of: store.isPostFlowPresented) { _, isPresented in
+            if !isPresented { store.presentPendingSocialInvite() }
+        }
+        .onChange(of: store.notificationDestination) { _, destination in
+            if destination == nil { store.presentPendingSocialInvite() }
+        }
+        .onChange(of: store.isMaddoxPlayerPresented) { _, isPresented in
+            if !isPresented { store.presentPendingSocialInvite() }
+        }
+        .onChange(of: store.shouldPresentMaintenanceScreen) { _, isActive in
+            if !isActive { store.presentPendingSocialInvite() }
         }
         // Apply outside presentation modifiers so sheets inherit the same phase.
         .environment(\.defaultBackgroundPhase, defaultBackgroundPhase)

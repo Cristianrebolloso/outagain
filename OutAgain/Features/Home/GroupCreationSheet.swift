@@ -11,7 +11,11 @@ struct GroupCreationSheet: View {
     @FocusState private var isNameFocused: Bool
     @FocusState private var isSearchFocused: Bool
 
-    private var canCreate: Bool { !selectedFriendIDs.isEmpty }
+    @State private var isCreating = false
+    @State private var createdGroup: NightGroup?
+    @State private var creationError: String?
+
+    private var canCreate: Bool { !isCreating && store.viewer != nil }
 
     /// All friends are available in the picker; the panel itself controls how
     /// many rows are visible before scrolling.
@@ -38,6 +42,11 @@ struct GroupCreationSheet: View {
                 VStack(alignment: .leading, spacing: 24) {
                     friendPicker
                     nameField
+                    if let creationError {
+                        Text(creationError)
+                            .font(AppTypography.rowSubtitle)
+                            .foregroundStyle(AppTheme.softText)
+                    }
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 8)
@@ -70,6 +79,12 @@ struct GroupCreationSheet: View {
                 }
             }
         }
+        .interactiveDismissDisabled(isCreating)
+        .sheet(item: $createdGroup, onDismiss: { dismiss() }) { group in
+            ShareSocialInviteView(groupID: group.id)
+                .presentationDetents([.large])
+                .appSheetDragHandle()
+        }
     }
 
     // MARK: - Friend picker
@@ -86,7 +101,7 @@ struct GroupCreationSheet: View {
                         Image(systemName: "person.slash.fill")
                             .font(.system(size: 18))
                             .foregroundStyle(AppTheme.softText)
-                        Text("Add friends first to create a group.")
+                        Text("Create your group, then share an invite. Your friends can join after they install Out Again.")
                             .font(AppTypography.rowSubtitle)
                             .foregroundStyle(AppTheme.softText)
                     }
@@ -232,7 +247,7 @@ struct GroupCreationSheet: View {
             }
 
             NightPanel(cornerRadius: 20, padding: 0) {
-                TextField("e.g. Maddies Big Naturals", text: $groupName)
+                TextField("e.g. Saturday night", text: $groupName)
                     .font(AppTypography.body)
                     .foregroundStyle(.white)
                     .tint(accent)
@@ -248,11 +263,21 @@ struct GroupCreationSheet: View {
     // MARK: - Actions
 
     private func createGroup() {
-        store.createGroup(
-            name: groupName,
-            friendIDs: Array(selectedFriendIDs)
-        )
-        dismiss()
+        guard !isCreating else { return }
+        isCreating = true
+        creationError = nil
+        isNameFocused = false
+        isSearchFocused = false
+        Task {
+            let name = groupName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let group = await store.createGroup(
+                name: name.isEmpty ? "\(store.viewerIdentity.displayName)’s group" : name,
+                friendIDs: Array(selectedFriendIDs)
+            )
+            isCreating = false
+            if let group { createdGroup = group }
+            else { creationError = "Couldn’t create your group. Please try again." }
+        }
     }
 }
 

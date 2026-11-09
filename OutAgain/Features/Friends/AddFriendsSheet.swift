@@ -115,7 +115,6 @@ struct AddFriendsSheet: View {
     @State private var isTabRefreshing = false
     @State private var friendsScrollOffset: CGFloat = 0
     @State private var isTitleScrolled = false
-    @State private var didTriggerPullRefresh = false
     @FocusState private var isSearchFocused: Bool
 
     @ViewBuilder
@@ -176,15 +175,8 @@ struct AddFriendsSheet: View {
                 .coordinateSpace(name: "friendsScroll")
                 .onPreferenceChange(FriendsScrollOffsetKey.self) { offset in
                     friendsScrollOffset = offset
-                    if offset > 60 && !isTabRefreshing && !didTriggerPullRefresh {
-                        didTriggerPullRefresh = true
-                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                        Task {
-                            await runManualRefresh()
-                        }
-                    }
-                    if offset <= 0 { didTriggerPullRefresh = false }
                 }
+                .glassPullToRefresh(isRefreshing: isTabRefreshing) { await runManualRefresh() }
                 .scrollIndicators(.hidden)
                 .scrollBounceBehavior(.always, axes: .vertical)
                 // Keep the warm ambient present on the People tab. Despite the
@@ -192,13 +184,6 @@ struct AddFriendsSheet: View {
                 // and needs to paint its own surface like Profile does.
                 .scrollContentBackground(.hidden)
                 .modifier(MainPageSurface())
-                .overlay(alignment: .top) {
-                    if isTabRefreshing {
-                        MainTabRefreshIndicator()
-                            .padding(.top, 8)
-                            .transition(.move(edge: .top).combined(with: .opacity))
-                    }
-                }
                 // Tapping anywhere outside the search field dismisses the keyboard.
                 .onTapGesture { isSearchFocused = false }
                 // Prevent keyboard from pushing this view (and the tab bar) upward.
@@ -298,15 +283,8 @@ struct AddFriendsSheet: View {
                     .coordinateSpace(name: "friendsScroll")
                     .onPreferenceChange(FriendsScrollOffsetKey.self) { offset in
                         friendsScrollOffset = offset
-                        if offset > 60 && !isTabRefreshing && !didTriggerPullRefresh {
-                            didTriggerPullRefresh = true
-                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                            Task {
-                                await runManualRefresh()
-                            }
-                        }
-                        if offset <= 0 { didTriggerPullRefresh = false }
                     }
+                    .glassPullToRefresh(isRefreshing: isTabRefreshing) { await runManualRefresh() }
                     .modifier(DuoPageViewport())
                     .toolbarBackground(.hidden, for: .navigationBar)
                     .navigationBarTitleDisplayMode(.inline)
@@ -319,13 +297,6 @@ struct AddFriendsSheet: View {
                     // and needs to paint its own surface like Profile does.
                     .scrollContentBackground(.hidden)
                     .modifier(MainPageSurface())
-                    .overlay(alignment: .top) {
-                        if isTabRefreshing {
-                            MainTabRefreshIndicator()
-                                .padding(.top, 8)
-                                .transition(.move(edge: .top).combined(with: .opacity))
-                        }
-                    }
                     // Tapping anywhere outside the search field dismisses the keyboard.
                     .onTapGesture { isSearchFocused = false }
                     // Prevent keyboard from pushing this view (and the tab bar) upward.
@@ -404,6 +375,7 @@ struct AddFriendsSheet: View {
     }
 
     private func runManualRefresh() async {
+        guard !isTabRefreshing else { return }
         let refreshStartedAt = Date()
         await MainActor.run {
             withAnimation(.easeInOut(duration: 0.18)) {
@@ -580,6 +552,7 @@ struct AddFriendsSheet: View {
 
     @ViewBuilder
     private func discoverSection(store: AppStore) -> some View {
+        SocialInviteActions()
         // Order is fixed regardless of state: search first, requests
         // second, suggested third. Putting search at the top means the
         // primary action (find a specific person by handle) is always one
@@ -722,7 +695,7 @@ struct AddFriendsSheet: View {
                 } else if matchingFriends.isEmpty && addableResults.isEmpty {
                     sectionMessage(
                         title: "No results found",
-                        detail: nil
+                        detail: "Try their name or @username, or send them an invite link."
                     )
                 } else {
                     VStack(alignment: .leading, spacing: 14) {

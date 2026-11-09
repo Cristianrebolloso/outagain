@@ -168,7 +168,13 @@ extension AppStore {
 
     private static func loadCachedPosts() -> [MomentPost]? {
         guard let data = UserDefaults.standard.data(forKey: cacheKey) else { return nil }
-        return try? JSONDecoder().decode([MomentPost].self, from: data)
+        return (try? JSONDecoder().decode([MomentPost].self, from: data))?.map { cached in
+            var post = cached
+            post.reactions.removeAll { !ReactionKind.allCases.contains($0.kind) }
+            post.viewerReactionKinds = post.viewerReactionKinds.intersection(ReactionKind.allCases)
+            post.fullyLoadedReactionKinds = post.fullyLoadedReactionKinds.intersection(ReactionKind.allCases)
+            return post
+        }
     }
 
     static func loadCachedViewer() -> UserProfile? {

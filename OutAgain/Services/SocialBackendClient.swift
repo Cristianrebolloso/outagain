@@ -452,6 +452,9 @@ struct ProfileFriendRank: Hashable {
 }
 
 protocol SocialBackendClient {
+    func fetchPurchaseEntitlements(environment: String) async throws -> [PurchaseEntitlement]
+    func fetchPlusMembers() async throws -> [PlusMember]
+    func verifyStorePurchase(signedTransaction: String) async throws
     /// True when the client has a stored auth session (access + refresh token).
     /// Used to distinguish "no profile row returned" (transient) from
     /// "genuinely not authenticated" (should sign out).
@@ -474,6 +477,9 @@ protocol SocialBackendClient {
     func updateBackgroundTheme(_ theme: BackgroundTheme, for viewer: UserProfile) async throws
     func updateDrinkCatalogPreferences(_ preferences: DrinkCatalogPreferences, for viewer: UserProfile) async throws
     func createInviteLink(for username: String) -> URL
+    func createSocialInvite(groupID: UUID?) async throws -> SocialInvite
+    func resolveSocialInvite(token: String) async throws -> SocialInvite
+    func acceptSocialInvite(token: String) async throws -> SocialInviteAcceptance
     func searchUsers(matching query: String, excluding viewer: UserProfile?) async throws -> [UserProfile]
     func loadUserProfile(id: UUID) async throws -> UserProfile?
     func loadFriendCount(of profile: UserProfile, for viewer: UserProfile) async throws -> Int
@@ -647,6 +653,9 @@ protocol SocialBackendClient {
 }
 
 extension SocialBackendClient {
+    func fetchPurchaseEntitlements(environment: String) async throws -> [PurchaseEntitlement] { [] }
+    func fetchPlusMembers() async throws -> [PlusMember] { [] }
+    func verifyStorePurchase(signedTransaction: String) async throws { throw PurchaseError.unavailable }
     func beginSignOut() -> Task<Void, Never> {
         Task {
             try? await signOut()

@@ -55,6 +55,7 @@ extension AppStore {
     }
 
     private func performFriendSearch(for query: String) async {
+        let searchingViewerID = viewer?.id
         do {
             let results = try await backend.searchUsers(matching: query, excluding: viewer)
                 .filter { candidate in
@@ -65,11 +66,13 @@ extension AppStore {
             // The query may have changed during the network round-trip (user
             // kept typing after debounce fired). Drop stale results rather
             // than clobbering a newer query's state.
-            guard !Task.isCancelled, query == PeopleSearchRules.normalized(friendSearchQuery) else { return }
+            guard !Task.isCancelled, viewer?.id == searchingViewerID,
+                  query == PeopleSearchRules.normalized(friendSearchQuery) else { return }
             friendSearchResults = results
             isSearchingFriends = false
         } catch {
-            guard !Task.isCancelled, query == PeopleSearchRules.normalized(friendSearchQuery) else { return }
+            guard !Task.isCancelled, viewer?.id == searchingViewerID,
+                  query == PeopleSearchRules.normalized(friendSearchQuery) else { return }
             isSearchingFriends = false
             friendSearchError = "Couldn't search right now. Check your connection and try again."
         }
@@ -102,8 +105,10 @@ extension AppStore {
         Task {
             do {
                 try await backend.sendFriendRequest(to: friend, for: viewer)
+                guard self.viewer?.id == viewer.id else { return }
                 await refreshAppData(silenceErrors: true)
             } catch {
+                guard self.viewer?.id == viewer.id else { return }
                 outgoingFriendRequests.removeAll { $0.id == optimisticRequest.id }
                 socialErrorMessage = "Couldn't send that friend request."
             }
@@ -111,10 +116,13 @@ extension AppStore {
     }
 
     func acceptIncomingRequest(_ request: FriendRequest) {
-        guard request.direction == .incoming else { return }
+        guard request.direction == .incoming,
+              incomingFriendRequests.contains(where: { $0.id == request.id }),
+              !blockedUserIDs.contains(request.counterpart.id) else { return }
 
         // Optimistic: promote counterpart to friends, clear the pending row.
-        if !friends.contains(where: { $0.id == request.counterpart.id }) {
+        let wasAlreadyFriend = friends.contains(where: { $0.id == request.counterpart.id })
+        if !wasAlreadyFriend {
             friends.insert(request.counterpart, at: 0)
         }
         incomingFriendRequests.removeAll { $0.id == request.id }
@@ -125,8 +133,17 @@ extension AppStore {
         Task {
             do {
                 try await backend.acceptFriendRequest(request, for: viewer)
+                guard self.viewer?.id == viewer.id else { return }
                 await refreshAppData(silenceErrors: true)
             } catch {
+                guard self.viewer?.id == viewer.id else { return }
+                // Restore immediately even if the reconciliation request also
+                // fails offline; otherwise a failed acceptance looks successful.
+                if !wasAlreadyFriend { friends.removeAll { $0.id == request.counterpart.id } }
+                if !blockedUserIDs.contains(request.counterpart.id),
+                   !incomingFriendRequests.contains(where: { $0.id == request.id }) {
+                    incomingFriendRequests.insert(request, at: 0)
+                }
                 socialErrorMessage = "Couldn't accept that friend request."
                 await refreshAppData(silenceErrors: true)
             }
@@ -142,8 +159,14 @@ extension AppStore {
         Task {
             do {
                 try await backend.rejectFriendRequest(request, for: viewer)
+                guard self.viewer?.id == viewer.id else { return }
                 await refreshAppData(silenceErrors: true)
             } catch {
+                guard self.viewer?.id == viewer.id else { return }
+                if !blockedUserIDs.contains(request.counterpart.id),
+                   !incomingFriendRequests.contains(where: { $0.id == request.id }) {
+                    incomingFriendRequests.insert(request, at: 0)
+                }
                 socialErrorMessage = "Couldn't reject that friend request."
                 await refreshAppData(silenceErrors: true)
             }
@@ -160,8 +183,14 @@ extension AppStore {
             do {
                 // Cancelling an outgoing request is the same DB operation as rejecting an incoming one.
                 try await backend.rejectFriendRequest(request, for: viewer)
+                guard self.viewer?.id == viewer.id else { return }
                 await refreshAppData(silenceErrors: true)
             } catch {
+                guard self.viewer?.id == viewer.id else { return }
+                if !blockedUserIDs.contains(request.counterpart.id),
+                   !outgoingFriendRequests.contains(where: { $0.id == request.id }) {
+                    outgoingFriendRequests.insert(request, at: 0)
+                }
                 socialErrorMessage = "Couldn't cancel that request."
                 await refreshAppData(silenceErrors: true)
             }
@@ -175,8 +204,13 @@ extension AppStore {
         Task {
             do {
                 try await backend.unfriend(friend, for: viewer)
+                guard self.viewer?.id == viewer.id else { return }
                 await refreshAppData(silenceErrors: true)
             } catch {
+                guard self.viewer?.id == viewer.id else { return }
+                if !blockedUserIDs.contains(friend.id), !friends.contains(where: { $0.id == friend.id }) {
+                    friends = sortProfilesByDisplayName(friends + [friend])
+                }
                 socialErrorMessage = "Couldn't remove that friend."
                 await refreshAppData(silenceErrors: true)
             }

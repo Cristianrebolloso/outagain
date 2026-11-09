@@ -4,7 +4,8 @@ enum PeopleSearchRules {
     static func normalized(_ query: String) -> String {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let unprefixed = trimmed.hasPrefix("@") ? String(trimmed.dropFirst()) : trimmed
-        return String(unprefixed.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().prefix(64))
+        let words = unprefixed.split(whereSeparator: { $0.isWhitespace })
+        return String(words.joined(separator: " ").lowercased().prefix(64))
     }
 }
 
@@ -360,7 +361,8 @@ struct SupabaseFeedReactionRecord: Decodable {
     var created_at: Date
 
     var reactionKind: ReactionKind? {
-        ReactionKind(rawValue: kind)
+        guard let reaction = ReactionKind(rawValue: kind), ReactionKind.allCases.contains(reaction) else { return nil }
+        return reaction
     }
 }
 
@@ -370,7 +372,6 @@ struct SupabasePostEngagementRecord: Decodable {
     var cheers_count: Int
     var spark_count: Int
     var fire_count: Int
-    var dislike_count: Int?
     var viewer_reaction_kinds: [String]
 
     var reactionCounts: [ReactionKind: Int] {
@@ -378,12 +379,11 @@ struct SupabasePostEngagementRecord: Decodable {
         if cheers_count > 0 { counts[.cheers] = cheers_count }
         if spark_count > 0 { counts[.spark] = spark_count }
         if fire_count > 0 { counts[.fire] = fire_count }
-        if let dislike_count, dislike_count > 0 { counts[.dislike] = dislike_count }
         return counts
     }
 
     var viewerReactionKinds: Set<ReactionKind> {
-        Set(viewer_reaction_kinds.compactMap(ReactionKind.init(rawValue:)))
+        Set(viewer_reaction_kinds.compactMap(ReactionKind.init(rawValue:)).filter { ReactionKind.allCases.contains($0) })
     }
 }
 

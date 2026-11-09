@@ -94,7 +94,7 @@ struct AdminBroadcastsView: View {
             AmbientBackground()
                 .ignoresSafeArea()
         }
-        .refreshable {
+        .glassPullToRefresh {
             await refreshAdminData()
         }
         .task {

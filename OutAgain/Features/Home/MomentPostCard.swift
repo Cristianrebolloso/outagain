@@ -43,10 +43,6 @@ struct MomentPostCard: View {
         livePost.reactions.first(where: { $0.kind == .cheers })?.count ?? 0
     }
 
-    private var dislikeCount: Int {
-        livePost.reactions.first(where: { $0.kind == .dislike })?.count ?? 0
-    }
-
     private var locationTitle: String? {
         if livePost.isSharedLocally == true { return resolvedLocality.map { "Local · \($0)" } ?? "Local · Approximate area" }
         if let venue = livePost.venue {
@@ -76,18 +72,6 @@ struct MomentPostCard: View {
         livePost.viewerReactionKinds.contains(.cheers)
     }
 
-    private var isPostDisliked: Bool {
-        livePost.viewerReactionKinds.contains(.dislike)
-    }
-
-    private var canDislikePosts: Bool {
-        store.viewerIdentity.isVerified
-    }
-
-    private var shouldShowDislikeAction: Bool {
-        canDislikePosts || dislikeCount > 0 || isPostDisliked
-    }
-
     /// True when the viewer authored this post — used to gate the delete
     /// affordance in the overflow menu. Matches the server-side RLS rule
     /// so the UI never offers an action the backend would reject.
@@ -106,22 +90,6 @@ struct MomentPostCard: View {
 
     private var likeActionTitle: String {
         cheersCount == 0 ? "Like" : "\(cheersCount)"
-    }
-
-    private var dislikeActionTitle: String {
-        dislikeCount == 0 ? "Dislike" : "\(dislikeCount)"
-    }
-
-    private var dislikeAccessibilityLabel: String {
-        if isPostDisliked {
-            return "Remove did not fw reaction"
-        }
-
-        if canDislikePosts {
-            return "Did not fw this post"
-        }
-
-        return "\(dislikeCount) \(dislikeCount == 1 ? "person" : "people") did not fw this post"
     }
 
     private var recentCommentPreviews: [Comment] {
@@ -591,13 +559,12 @@ struct MomentPostCard: View {
     private var actionBar: some View {
         ViewThatFits(in: .horizontal) {
             actionButtons()
-            actionButtons(showsDislikeTitle: false)
-            actionButtons(showsDislikeTitle: false, showsActionTitles: false)
+            actionButtons(showsActionTitles: false)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func actionButtons(showsDislikeTitle: Bool = true, showsActionTitles: Bool = true) -> some View {
+    private func actionButtons(showsActionTitles: Bool = true) -> some View {
         HStack(spacing: 18) {
             PostActionLabel(
                 icon: isPostLiked ? "heart.fill" : "heart",
@@ -621,31 +588,6 @@ struct MomentPostCard: View {
             )
             .accessibilityAddTraits(.isButton)
             .accessibilityLabel(isPostLiked ? "Unlike" : "Like")
-
-            if shouldShowDislikeAction {
-                PostActionLabel(
-                    icon: isPostDisliked ? "hand.thumbsdown.fill" : "hand.thumbsdown",
-                    title: showsDislikeTitle || dislikeCount > 0 ? dislikeActionTitle : nil,
-                    isActive: isPostDisliked
-                )
-                .contentShape(Rectangle())
-                .gesture(
-                    LongPressGesture(minimumDuration: 0.35)
-                        .exclusively(before: TapGesture())
-                        .onEnded { value in
-                            switch value {
-                            case .first(true):
-                                showDislikeReactorCardIfAvailable()
-                            case .second:
-                                handleDislikeTap()
-                            default:
-                                break
-                            }
-                        }
-                )
-                .accessibilityAddTraits(.isButton)
-                .accessibilityLabel(dislikeAccessibilityLabel)
-            }
 
             Button(action: onCommentTap) {
                 PostActionLabel(
@@ -725,15 +667,6 @@ struct MomentPostCard: View {
         }
     }
 
-    private func showDislikeReactorCardIfAvailable() {
-        guard dislikeCount > 0 else { return }
-        withAnimation(.snappy(duration: 0.22)) {
-            isOverlayDismissalShieldPresented = false
-            isTaggedFriendsCardPresented = false
-            reactorSheetKind = .dislike
-        }
-    }
-
     private func showTaggedFriendsCard() {
         guard livePost.taggedFriends.count > 1 else { return }
         withAnimation(.snappy(duration: 0.22)) {
@@ -782,20 +715,6 @@ struct MomentPostCard: View {
     private func togglePostLike() {
         withAnimation(.snappy(duration: 0.22)) {
             store.addReaction(.cheers, to: livePost)
-        }
-    }
-
-    private func handleDislikeTap() {
-        if canDislikePosts || isPostDisliked {
-            togglePostDislike()
-        } else {
-            showDislikeReactorCardIfAvailable()
-        }
-    }
-
-    private func togglePostDislike() {
-        withAnimation(.snappy(duration: 0.22)) {
-            store.addReaction(.dislike, to: livePost)
         }
     }
 
@@ -988,6 +907,7 @@ private struct PostActionLabel: View {
 }
 
 private struct CommentPreview: View {
+    @Environment(AppStore.self) private var store
     let comment: Comment
 
     var body: some View {
@@ -1018,8 +938,8 @@ private struct CommentPreview: View {
                 .font(AppTypography.pill)
                 .foregroundStyle(.white.opacity(0.96))
 
-            if profile.isVerified {
-                VerifiedBadgeView(size: 10)
+            if profile.isVerified || store.purchases.isPlusMember(profile.id) {
+                VerifiedBadgeView(size: 10, isPlusMember: store.purchases.isPlusMember(profile.id))
             }
 
             Text(detail)
@@ -1184,7 +1104,7 @@ private struct ReactorListCard: View {
         case .cheers: return "Likes"
         case .spark: return "Locked In"
         case .fire: return "Fire"
-        case .dislike: return "Did not fw"
+        case .dislike: return "Reactions"
         }
     }
 
@@ -1193,7 +1113,7 @@ private struct ReactorListCard: View {
         case .cheers: return "heart.fill"
         case .spark: return "sparkles"
         case .fire: return "flame.fill"
-        case .dislike: return "hand.thumbsdown.fill"
+        case .dislike: return "heart.fill"
         }
     }
 

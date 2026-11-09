@@ -1,0 +1,146 @@
+{
+  "identifier": "860fbeb8-07e7-42a8-9d57-14fb4667f200",
+  "nonRenewingSubscriptions": [],
+  "products": [
+    {
+      "displayPrice": "0.99",
+      "familyShareable": false,
+      "internalID": "b53af943-9954-4d9c-9585-694eb38ff9c2",
+      "localizations": [
+        {
+          "description": "Own this background permanently.",
+          "displayName": "Night Background",
+          "locale": "en_US"
+        }
+      ],
+      "productID": "com.cristian.OutAgain.background.night",
+      "referenceName": "Night Background",
+      "type": "NonConsumable"
+    },
+    {
+      "displayPrice": "0.99",
+      "familyShareable": false,
+      "internalID": "36a15e17-2933-423d-a4e1-28e242fd61d3",
+      "localizations": [
+        {
+          "description": "Own this background permanently.",
+          "displayName": "Orange Background",
+          "locale": "en_US"
+        }
+      ],
+      "productID": "com.cristian.OutAgain.background.orange",
+      "referenceName": "Orange Background",
+      "type": "NonConsumable"
+    },
+    {
+      "displayPrice": "0.99",
+      "familyShareable": false,
+      "internalID": "464367d1-93a0-47c0-a752-ff4acf2eaa40",
+      "localizations": [
+        {
+          "description": "Own this background permanently.",
+          "displayName": "Green Background",
+          "locale": "en_US"
+        }
+      ],
+      "productID": "com.cristian.OutAgain.background.green",
+      "referenceName": "Green Background",
+      "type": "NonConsumable"
+    },
+    {
+      "displayPrice": "0.99",
+      "familyShareable": false,
+      "internalID": "b7d00f18-1f58-4b73-8def-6a2f64bdeb38",
+      "localizations": [
+        {
+          "description": "Own this background permanently.",
+          "displayName": "Pink Background",
+          "locale": "en_US"
+        }
+      ],
+      "productID": "com.cristian.OutAgain.background.pink",
+      "referenceName": "Pink Background",
+      "type": "NonConsumable"
+    },
+    {
+      "displayPrice": "0.99",
+      "familyShareable": false,
+      "internalID": "a5d653fa-2834-4796-9fcd-84b93b87cfd5",
+      "localizations": [
+        {
+          "description": "Own this background permanently.",
+          "displayName": "Blue Background",
+          "locale": "en_US"
+        }
+      ],
+      "productID": "com.cristian.OutAgain.background.blue",
+      "referenceName": "Blue Background",
+      "type": "NonConsumable"
+    }
+  ],
+  "settings": {
+    "_applicationInternalID": "6763454742",
+    "_developerTeamID": "4JLZS37N8V",
+    "_failTransactionsEnabled": false,
+    "_locale": "en_US",
+    "_storefront": "USA",
+    "_storeKitErrors": []
+  },
+  "subscriptionGroups": [
+    {
+      "id": "22065029",
+      "localizations": [],
+      "name": "Out Again+",
+      "subscriptions": [
+        {
+          "adHocOffers": [],
+          "codeOffers": [],
+          "displayPrice": "0.99",
+          "familyShareable": false,
+          "groupNumber": 1,
+          "internalID": "fcf6ae5f-dff2-4bfe-8518-b6757c7376d1",
+          "introductoryOffer": null,
+          "localizations": [
+            {
+              "description": "No ads, every background, and your Plus badge.",
+              "displayName": "Out Again+ Monthly",
+              "locale": "en_US"
+            }
+          ],
+          "productID": "com.cristian.OutAgain.plus.monthly",
+          "recurringSubscriptionPeriod": "P1M",
+          "referenceName": "Out Again+ Monthly",
+          "subscriptionGroupID": "22065029",
+          "type": "RecurringSubscription",
+          "winBackOffers": []
+        },
+        {
+          "adHocOffers": [],
+          "codeOffers": [],
+          "displayPrice": "10.00",
+          "familyShareable": false,
+          "groupNumber": 1,
+          "internalID": "7a250e01-636b-4f21-9ce2-50b74570154c",
+          "introductoryOffer": null,
+          "localizations": [
+            {
+              "description": "No ads, every background, and your Plus badge.",
+              "displayName": "Out Again+ Yearly",
+              "locale": "en_US"
+            }
+          ],
+          "productID": "com.cristian.OutAgain.plus.yearly",
+          "recurringSubscriptionPeriod": "P1Y",
+          "referenceName": "Out Again+ Yearly",
+          "subscriptionGroupID": "22065029",
+          "type": "RecurringSubscription",
+          "winBackOffers": []
+        }
+      ]
+    }
+  ],
+  "version": {
+    "major": 3,
+    "minor": 0
+  }
+}

@@ -267,6 +267,7 @@ extension AppStore {
         guard bootstrapPhase == .ready else { return }
 
         refreshAppConfigInBackground()
+        Task { await purchases.refresh() }
         startForegroundPollingIfNeeded()
         startMaintenanceConfigPollingIfNeeded()
         Task {
@@ -322,6 +323,7 @@ extension AppStore {
                 guard !Task.isCancelled else { return }
                 tickCount += 1
                 await self?.refreshAppConfigOnly()
+                await self?.purchases.refresh()
                 if self?.shouldPresentMaintenanceScreen == true {
                     continue
                 } else if self?.isOffline == true {
@@ -783,6 +785,7 @@ extension AppStore {
     }
 
     func finishSessionEndedLocally() {
+        isOffline = false
         notificationPreferenceUserID = nil
         notificationPreferenceRevision = UUID()
         notificationPreferences = NotificationPreferences()

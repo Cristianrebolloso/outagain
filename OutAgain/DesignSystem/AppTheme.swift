@@ -697,10 +697,10 @@ private struct StandardNightlifeBackdrop: View {
     ]
 
     var body: some View {
-        let radius = min(screenSize.width, screenSize.height) * 0.62
+        let radius = min(screenSize.width, screenSize.height) * phase.lightRadius
 
         ZStack {
-            Color(hex: "#020309")
+            Color.black
 
             ForEach(lights.indices, id: \.self) { index in
                 let light = lights[index]
@@ -723,7 +723,7 @@ private struct StandardNightlifeBackdrop: View {
             }
         }
         .frame(width: screenSize.width, height: screenSize.height)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.28), value: phase)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.20), value: phase)
         .clipped()
         .allowsHitTesting(false)
         .accessibilityHidden(true)
@@ -1605,8 +1605,12 @@ enum DefaultBackgroundPhase {
     case default2
 
     var lightIntensity: Double {
-        self == .default1 ? 1 : 0.50
+        self == .default1 ? 1 : 0.42
     }
+
+    /// The centers stay fixed; only the pools of light contract as loading ends.
+    /// Smaller radii leave real black space between neighboring bar lights.
+    var lightRadius: CGFloat { self == .default1 ? 0.62 : 0.36 }
 }
 
 private struct DefaultBackgroundPhaseKey: EnvironmentKey {

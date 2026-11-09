@@ -30,6 +30,7 @@ begin
   assert (select count(*)=3 from public.search_profiles('qz')), 'Two-character search, self/block/ban filtering';
   assert (select count(*)=1 from public.search_profiles('  @QZ_AL  ')), 'Handle normalization or literal underscore';
   assert (select count(*)=1 from public.search_profiles('Alex Morgan')), 'Full name search';
+  assert (select count(*)=1 from public.search_profiles(E'  ALEX   \t MORGAN  ')), 'Repeated whitespace in a pasted name';
   assert exists(select 1 from public.search_profiles('morgan') where id='a0cc0000-0000-4000-8000-000000000002'), 'Last name search';
   assert (select count(*)=0 from public.search_profiles('x')), 'Short search must stay empty';
   assert (select count(*)=0 from public.search_profiles('%')), 'Search wildcard must not enumerate users';
@@ -38,6 +39,7 @@ begin
   assert (select count(*)=0 from public.posts where id='b0cc0000-0000-4000-8000-000000000001'), 'Search must not expose private posts';
   insert into public.friendships(id,user_id,friend_id,status) values
     ('c0cc0000-0000-4000-8000-000000000001',auth.uid(),'a0cc0000-0000-4000-8000-000000000002','pending');
+  assert exists(select 1 from public.profiles where id='a0cc0000-0000-4000-8000-000000000002'), 'Pending recipient profile must hydrate for sender';
   begin
     update public.friendships set status='accepted' where id='c0cc0000-0000-4000-8000-000000000001';
   exception when insufficient_privilege then rejected:=true; end;
@@ -56,6 +58,9 @@ begin
   assert exists(select 1 from public.friendships where user_id='a0cc0000-0000-4000-8000-000000000004' and status='blocked'), 'Blocked person cannot remove another account block';
 end $$;
 select set_config('request.jwt.claim.sub','a0cc0000-0000-4000-8000-000000000002',true);
+do $$ begin
+  assert exists(select 1 from public.profiles where id='a0cc0000-0000-4000-8000-000000000001'), 'Pending sender profile must hydrate for recipient';
+end $$;
 update public.friendships set status='accepted' where id='c0cc0000-0000-4000-8000-000000000001';
 -- Retrying after a lost acceptance response must not send another alert.
 update public.friendships set status='accepted' where id='c0cc0000-0000-4000-8000-000000000001';

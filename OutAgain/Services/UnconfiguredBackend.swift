@@ -44,6 +44,9 @@ struct UnconfiguredBackend: SocialBackendClient {
     func createInviteLink(for username: String) -> URL {
         URL(string: "https://outagain.app")!
     }
+    func createSocialInvite(groupID: UUID?) async throws -> SocialInvite { throw error }
+    func resolveSocialInvite(token: String) async throws -> SocialInvite { throw error }
+    func acceptSocialInvite(token: String) async throws -> SocialInviteAcceptance { throw error }
     func searchUsers(matching query: String, excluding viewer: UserProfile?) async throws -> [UserProfile] {
         throw error
     }

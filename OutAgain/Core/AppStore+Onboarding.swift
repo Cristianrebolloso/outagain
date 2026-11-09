@@ -208,7 +208,9 @@ private extension AppStore {
             onboardingDraft.inviteLink = backend.createInviteLink(for: availableUsername).absoluteString
         }
 
-        onboardingStep = .permissions
+        // Get to people first. Camera/location are requested when posting or
+        // using nearby features; notification opt-in sits beside invitations.
+        onboardingStep = .invite
     }
 
     func confirmAvailableOnboardingUsername() async -> String? {

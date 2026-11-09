@@ -772,10 +772,8 @@ final class SupabaseSocialBackendClient: SocialBackendClient {
     }
 
     func createInviteLink(for username: String) -> URL {
-        let slug = UUID().uuidString.prefix(8).lowercased()
-        let normalized = UsernameRules.normalized(username)
-        let base = environment.inviteBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        return URL(string: "\(base)/\(normalized)-\(slug)")!
+        // Legacy draft placeholder only. Real share links come from createSocialInvite.
+        URL(string: "https://cristianrebolloso.github.io/invite/")!
     }
 
     func searchUsers(matching query: String, excluding viewer: UserProfile?) async throws -> [UserProfile] {
@@ -1047,29 +1045,12 @@ final class SupabaseSocialBackendClient: SocialBackendClient {
     }
 
     func sendFriendRequest(to friend: UserProfile, for viewer: UserProfile) async throws {
-        // Enforce symmetry: if there is an INCOMING pending request from the
-        // other user, accept it rather than creating a duplicate outgoing
-        // row. This eliminates the "two rows for one friendship" ambiguity.
-        let inbound = try await fetchFriendship(from: friend.id, to: viewer.id)
-        if let inbound, inbound.status == "pending" {
-            try await updateFriendshipStatus(inbound.id, to: "accepted")
-            return
-        }
-
-        let payload = [
-            SupabaseFriendshipRecord(
-                user_id: viewer.id,
-                friend_id: friend.id,
-                status: "pending"
-            )
-        ]
-
-        try await sendRestWithoutResponse(
-            path: "friendships",
+        // The server derives the sender from auth.uid() and serializes reciprocal
+        // taps. A client-side read followed by an insert races across devices.
+        let _: String = try await sendRest(
+            path: "rpc/send_friend_request",
             method: "POST",
-            queryItems: [URLQueryItem(name: "on_conflict", value: "user_id,friend_id")],
-            prefer: "resolution=merge-duplicates,return=minimal",
-            body: payload
+            body: ["target_id": friend.id.uuidString.lowercased()]
         )
     }
 

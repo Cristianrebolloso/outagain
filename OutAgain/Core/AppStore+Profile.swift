@@ -1,6 +1,11 @@
 import Foundation
 
 extension AppStore {
+    func enforceBackgroundAccess() {
+        guard viewer != nil, purchases.hasLoadedEntitlements, !isLayoutPreview else { return }
+        if !purchases.canUse(backgroundTheme) { backgroundTheme = .standard }
+    }
+
     func handleBackgroundThemeChanged(_ theme: BackgroundTheme) {
         guard var updatedViewer = viewer else { return }
 

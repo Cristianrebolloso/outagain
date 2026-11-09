@@ -243,6 +243,7 @@ extension AppStore {
     }
 
     func handleIncomingURL(_ url: URL) {
+        if receiveSocialInvite(url.absoluteString) { return }
         guard url.scheme == QuickPostDeepLink.quickPostURL.scheme else { return }
 
         let host = url.host?.lowercased()
@@ -429,12 +430,10 @@ extension AppStore {
     }
 
     func addReaction(_ kind: ReactionKind, to post: MomentPost) {
+        guard ReactionKind.allCases.contains(kind) else { return }
         guard let index = posts.firstIndex(where: { $0.id == post.id }) else { return }
 
         let isRemovingExistingReaction = posts[index].viewerReactionKinds.contains(kind)
-        if kind == .dislike && !viewerIdentity.isVerified && !isRemovingExistingReaction {
-            return
-        }
 
         if isRemovingExistingReaction {
             applyLocalReactionRemoval(kind, at: index)
@@ -475,13 +474,6 @@ extension AppStore {
             return
         }
 
-        let mutuallyExclusiveKind = mutuallyExclusiveReaction(for: kind)
-        let removedMutuallyExclusiveKind = mutuallyExclusiveKind.flatMap { oppositeKind -> ReactionKind? in
-            guard posts[index].viewerReactionKinds.contains(oppositeKind) else { return nil }
-            applyLocalReactionRemoval(oppositeKind, at: index)
-            return oppositeKind
-        }
-
         applyLocalReactionAddition(kind, at: index)
 
         let updatedPost = posts[index]
@@ -489,32 +481,8 @@ extension AppStore {
         let reactionKey = PendingPostReactionKey(postID: updatedPost.id, kind: kind)
         pendingReactionStates[reactionKey] = true
 
-        let removedReactionKey = removedMutuallyExclusiveKind.map {
-            PendingPostReactionKey(postID: updatedPost.id, kind: $0)
-        }
-        if let removedReactionKey {
-            pendingReactionStates[removedReactionKey] = false
-        }
-
-        if removedMutuallyExclusiveKind != nil,
-           updatedPost.author.id != viewer.id {
-            notifications.removeAll {
-                $0.kind == .reaction
-                    && $0.actor?.id == viewer.id
-                    && $0.postID == updatedPost.id
-            }
-        }
-
         Task {
             do {
-                if let removedMutuallyExclusiveKind {
-                    try await backend.removeReaction(removedMutuallyExclusiveKind, from: updatedPost, by: viewer)
-                    try? await backend.deleteReactionNotification(removedMutuallyExclusiveKind, on: updatedPost, by: viewer)
-                    if let removedReactionKey, pendingReactionStates[removedReactionKey] == false {
-                        pendingReactionStates[removedReactionKey] = nil
-                    }
-                }
-
                 if let delivery = try await backend.recordReaction(kind, to: updatedPost, by: viewer) {
                     outboundNotificationDeliveries.insert(delivery, at: 0)
                 }
@@ -528,28 +496,10 @@ extension AppStore {
                     applyLocalReactionState(kind, inPostID: updatedPost.id, isPresent: false)
                     shouldShowError = true
                 }
-                if let removedMutuallyExclusiveKind,
-                   let removedReactionKey,
-                   pendingReactionStates[removedReactionKey] == false {
-                    pendingReactionStates[removedReactionKey] = nil
-                    applyLocalReactionState(removedMutuallyExclusiveKind, inPostID: updatedPost.id, isPresent: true)
-                    shouldShowError = true
-                }
                 if shouldShowError {
                     socialErrorMessage = "Couldn't update that like."
                 }
             }
-        }
-    }
-
-    private func mutuallyExclusiveReaction(for kind: ReactionKind) -> ReactionKind? {
-        switch kind {
-        case .cheers:
-            return .dislike
-        case .dislike:
-            return .cheers
-        case .spark, .fire:
-            return nil
         }
     }
 

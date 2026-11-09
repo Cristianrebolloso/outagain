@@ -11,6 +11,7 @@ struct GroupFeedView: View {
     @State private var profileTarget: UserProfile? = nil
     @State private var isEditing = false
     @State private var isConfirmingDeleteGroup = false
+    @State private var isSharingInvite = false
 
     // Resolved live group from store so mutations (rename/delete) propagate
     private var liveGroup: NightGroup {
@@ -147,6 +148,11 @@ struct GroupFeedView: View {
         }
         .modifier(DuoSheetSurface())
         .modifier(PostDetailPresentation())
+        .sheet(isPresented: $isSharingInvite) {
+            ShareSocialInviteView(groupID: liveGroup.id)
+                .presentationDetents([.large])
+                .appSheetDragHandle()
+        }
         .sheet(item: Binding(
             get: { store.isDuoDevice ? nil : commentPost },
             set: { commentPost = $0 }
@@ -213,6 +219,16 @@ struct GroupFeedView: View {
             )
 
             HStack(spacing: 10) {
+                if isCreator {
+                    Button { isSharingInvite = true } label: {
+                        Label("Invite", systemImage: "person.badge.plus")
+                            .font(AppTypography.button)
+                            .frame(minHeight: 44)
+                            .padding(.horizontal, 16)
+                    }
+                    .buttonStyle(.glass)
+                    .tint(.white)
+                }
                 Button {
                     isEditing = true
                 } label: {

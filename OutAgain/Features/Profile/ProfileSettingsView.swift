@@ -18,6 +18,8 @@ struct ProfileSettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @State private var isTitleScrolled = false
+    @State private var isPlusPresented = false
+    @State private var purchaseBackground: BackgroundTheme?
     @State private var isBlockedUsersSheetPresented = false
     @State private var isChangePasswordPresented = false
     @State private var isPasskeysPresented = false
@@ -26,11 +28,16 @@ struct ProfileSettingsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                plusPanel
                 accentColorPanel
                 notificationsPanel
                 permissionsPanel
                 safetyPanel
                 accountPanel
+                Text(store.appDisplayName)
+                    .font(AppTypography.metadataEmphasis)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
             }
             .padding(.horizontal, AppLayout.screenPadding)
             .padding(.top, AppLayout.secondaryPageTopPadding)
@@ -49,6 +56,11 @@ struct ProfileSettingsView: View {
         .modifier(MainPageSurface())
         .appSecondaryPageNavigation(title: "Settings", isScrolled: isTitleScrolled)
         .task(id: store.viewer?.id) {
+            #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--plus-paywall-preview") {
+                isPlusPresented = true
+            }
+            #endif
             await permissions.refreshNotificationStatus()
             await store.refreshNotificationPreferences()
         }
@@ -60,6 +72,8 @@ struct ProfileSettingsView: View {
         .navigationDestination(isPresented: $isChangePasswordPresented) {
             ChangePasswordView()
         }
+        .sheet(isPresented: $isPlusPresented) { PlusMembershipView() }
+        .sheet(item: $purchaseBackground) { theme in PlusMembershipView(background: theme) }
         .navigationDestination(isPresented: $isPasskeysPresented) {
             PasskeySettingsView()
         }
@@ -81,6 +95,25 @@ struct ProfileSettingsView: View {
 
     // MARK: - Accent Color
 
+    private var plusPanel: some View {
+        Button { isPlusPresented = true } label: {
+            NightPanel(cornerRadius: AppLayout.panelRadius) {
+                HStack(spacing: 16) {
+                    Image(systemName: "checkmark.seal.fill").font(.title)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Out Again+").font(AppTypography.sheetTitle)
+                        Text(store.purchases.isPlus ? "Your membership is active" : "No ads. Every background. Your Plus badge.")
+                            .font(AppTypography.rowSubtitle).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right").foregroundStyle(.secondary)
+                }
+                .foregroundStyle(.white)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
     private var accentColorPanel: some View {
         // Build the accent panel with `padding: 0` so the horizontal scroll
         // rows can extend edge-to-edge inside the panel. The text rows are
@@ -96,7 +129,7 @@ struct ProfileSettingsView: View {
                 settingsSectionTitle("Appearance")
                     .padding(.horizontal, 18)
 
-                Text("Accent Color")
+                Text("Accent Color · Free")
                     .font(AppTypography.rowTitle)
                     .foregroundStyle(.white)
                     .padding(.horizontal, 18)
@@ -163,16 +196,8 @@ struct ProfileSettingsView: View {
                     ForEach(BackgroundTheme.allCases) { theme in
                         let isSelected = store.backgroundTheme == theme
                         Button {
-                            store.backgroundTheme = theme
-                            // Auto-pair a matching accent when the user picks
-                            // certain backgrounds — a sensible default they can
-                            // still override by tapping a different accent color.
-                            switch theme {
-                            case .night:   store.accentColorChoice = .white
-                            case .original: store.accentColorChoice = .orange
-                            case .orange:  store.accentColorChoice = .orange
-default: break
-                            }
+                            if store.purchases.canUse(theme) { store.backgroundTheme = theme }
+                            else { purchaseBackground = theme }
                         } label: {
                             ZStack {
                                 RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -385,8 +410,18 @@ default: break
                                     }
 }
                             }
+                            .overlay(alignment: .bottomTrailing) {
+                                if !store.purchases.canUse(theme) {
+                                    Image(systemName: "lock.fill")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .padding(5).background(.black.opacity(0.7), in: Circle())
+                                        .offset(x: 4, y: 4)
+                                }
+                            }
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel(theme.label)
+                        .accessibilityHint(store.purchases.canUse(theme) ? "Use background" : "Purchase once or unlock with Out Again Plus")
                     }
                 }
                 // Same vertical-padding rationale as the accent row above:

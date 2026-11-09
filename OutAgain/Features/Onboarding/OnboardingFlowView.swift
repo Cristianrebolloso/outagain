@@ -173,6 +173,14 @@ struct OnboardingFlowView: View {
             }
             .frame(maxWidth: .infinity)
 
+            if store.pendingSocialInviteCode != nil {
+                Label("Invite saved. Finish signing in to join your friend.", systemImage: "person.crop.circle.badge.plus")
+                    .font(AppTypography.rowSubtitle)
+                    .foregroundStyle(.white)
+                    .padding(14)
+                    .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 18))
+            }
+
             NightPanel(cornerRadius: 34, padding: 22) {
                 VStack(alignment: .leading, spacing: 18) {
                     if store.isSignInMode {
@@ -400,15 +408,25 @@ struct OnboardingFlowView: View {
         @Bindable var store = store
 
         return VStack(alignment: .leading, spacing: 18) {
+            SocialInviteActions()
+            if permissions.notificationsStatus == .notDetermined {
+                PermissionPromptCard(
+                    title: "Know when friends post",
+                    symbol: "bell.badge.fill",
+                    state: permissions.notificationsStatus
+                ) {
+                    Task { await permissions.requestNotifications() }
+                }
+            }
             NightPanel(cornerRadius: 34, padding: 22) {
                 VStack(alignment: .leading, spacing: 18) {
-                    Text("Search by username to find and add friends before you start.")
+                    Text("Invite your friends, or find them by name or username.")
                         .font(AppTypography.callout)
                         .foregroundStyle(.white)
 
                     VStack(alignment: .leading, spacing: 12) {
                         fieldLabel("Find Friends")
-                        TextField("Search by username", text: $store.friendSearchQuery)
+                        TextField("Name or @username", text: $store.friendSearchQuery)
                             .font(AppTypography.formInput)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()

@@ -243,7 +243,10 @@ enum ReactionKind: String, CaseIterable, Hashable, Identifiable, Codable {
     case cheers
     case spark
     case fire
+    // Decode old feed caches without exposing the retired reaction in the app.
     case dislike
+
+    static let allCases: [ReactionKind] = [.cheers, .spark, .fire]
 
     var id: String { rawValue }
 
@@ -252,7 +255,7 @@ enum ReactionKind: String, CaseIterable, Hashable, Identifiable, Codable {
         case .cheers: "heart.fill"
         case .spark: "sparkles"
         case .fire: "flame.fill"
-        case .dislike: "hand.thumbsdown.fill"
+        case .dislike: "heart.fill"
         }
     }
 
@@ -261,7 +264,7 @@ enum ReactionKind: String, CaseIterable, Hashable, Identifiable, Codable {
         case .cheers: "Like"
         case .spark: "Locked In"
         case .fire: "Heating Up"
-        case .dislike: "Did not fw"
+        case .dislike: "Reaction"
         }
     }
 }

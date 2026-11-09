@@ -46,6 +46,13 @@ final class AppStore {
     /// Incremented every time the admin broadcast tab is selected.
     var adminTabSelectionTrigger = 0
     var friendsPageMode: FriendsPageMode = .discover
+    var pendingSocialInviteCode: String? = UserDefaults.standard.string(forKey: "OutAgain.pendingSocialInvite") {
+        didSet {
+            UserDefaults.standard.set(pendingSocialInviteCode, forKey: "OutAgain.pendingSocialInvite")
+        }
+    }
+    var isSocialInvitePresented = false
+    @ObservationIgnored var lastAutoPresentedSocialInviteCode: String?
     // When non-nil, the People tab auto-presents this profile on appear.
     var friendsTabPendingProfile: UserProfile? = nil
     var localFeedIDs: [UUID] = []
@@ -77,6 +84,8 @@ final class AppStore {
     var viewer: UserProfile? {
         didSet {
             if oldValue?.id != viewer?.id {
+                isSocialInvitePresented = false
+                purchases.switchAccount(to: viewer?.id)
                 commentComposerDrafts.removeAll()
                 feedDiscussion.reset()
                 homeProfile = nil
@@ -85,6 +94,8 @@ final class AppStore {
         }
     }
     let feedDiscussion = FeedDiscussionState()
+    let purchases = PurchaseStore()
+    var appDisplayName: String { purchases.isPlus ? "Out Again+" : "Out Again" }
     /// Enabled only by the system hinge interaction, never by screen width.
     var isDuoDevice = false
     @ObservationIgnored var commentComposerDrafts: [UUID: CommentComposerDraft] = [:]
@@ -132,7 +143,10 @@ final class AppStore {
     /// transport error (no connectivity, DNS failure, timeout). Cleared as
     /// soon as a subsequent refresh succeeds. Used to show a non-blocking
     /// offline banner in the feed rather than trapping the user on the splash.
-    var isOffline = false
+    let offlineNotice = OfflineNoticeState()
+    var isOffline = false {
+        didSet { offlineNotice.update(isOffline: isOffline) }
+    }
 
     /// Night groups: sourced from the backend `night_groups` table and synced
     /// on every bootstrap. All members of a group see it via RLS policy.
@@ -245,6 +259,7 @@ final class AppStore {
     var isLayoutPreview: Bool {
         #if DEBUG
         ProcessInfo.processInfo.arguments.contains("--duo-layout-preview")
+            || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
         #else
         false
         #endif
@@ -329,6 +344,8 @@ final class AppStore {
 
     var areFeedAdsEnabled: Bool {
         FeedAdConfiguration.isEnabled(in: appConfig)
+            && (isLayoutPreview || purchases.hasLoadedEntitlements)
+            && !purchases.isPlus
     }
 
     var arePasskeysEnabled: Bool {
