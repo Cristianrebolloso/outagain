@@ -308,7 +308,7 @@ struct OnboardingFlowView: View {
                             .overlay(alignment: .bottomTrailing) {
                                 Image(systemName: "plus.circle.fill")
                                     .font(.system(size: 22))
-                                    .foregroundStyle(.white, accent)
+                                    .foregroundStyle(AppTheme.foregroundOnAccent(accent), accent)
                                     .background(.black, in: Circle())
                             }
                         }

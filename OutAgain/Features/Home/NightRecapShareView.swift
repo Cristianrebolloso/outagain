@@ -81,11 +81,6 @@ struct NightRecapShareView: View {
 
     private var selectionContent: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Pick up to \(NightRecapExport.maximumPhotos) photos from the night.")
-                .font(AppTypography.sectionTitle)
-            Text("Only choose photos you're comfortable sharing outside Out Again. We don't add captions, locations, or names to the collage.")
-                .font(AppTypography.body)
-                .foregroundStyle(.secondary)
             Text("\(selection.count) of \(NightRecapExport.maximumPhotos) selected")
                 .font(AppTypography.buttonFootnote)
                 .foregroundStyle(.secondary)
@@ -139,9 +134,6 @@ struct NightRecapShareView: View {
                 .overlay { RoundedRectangle(cornerRadius: 26).strokeBorder(.white.opacity(0.16)) }
                 .frame(maxWidth: .infinity)
                 .accessibilityLabel("Recap preview with \(selectedPosts.count) selected photos from \(date.formatted(date: .complete, time: .omitted))")
-            Text("This is exactly what you'll share. Check the photo crops before continuing.")
-                .font(AppTypography.body)
-                .foregroundStyle(.secondary)
             Button {
                 save(image)
             } label: {

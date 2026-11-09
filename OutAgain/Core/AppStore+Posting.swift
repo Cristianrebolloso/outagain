@@ -3,6 +3,12 @@ import SwiftUI
 import UIKit
 
 extension AppStore {
+    enum PostFlowBackDestination: Equatable {
+        case camera
+        case home
+        case unchanged
+    }
+
     func openPostFlow() {
         guard !isPostFlowPresented else { return }
         postFlowDismissalRepinTask?.cancel()
@@ -30,6 +36,19 @@ extension AppStore {
     func closePostFlow() {
         isPostFlowPresented = false
         finishPostFlowDismissal()
+    }
+
+    /// Review goes back one step without losing optional details. Leaving the
+    /// camera returns Home, including when capture was opened from another tab.
+    func backFromPostFlow(hasPendingCapture: Bool = false) -> PostFlowBackDestination {
+        guard !isPublishingDraft else { return .unchanged }
+        if hasPendingCapture || postDraft.capturedPhotoData != nil || postDraft.isUsingSampleCapture {
+            clearDraftCapture(preservingDetails: true)
+            return .camera
+        }
+        lastRegularTab = .home
+        closePostFlow()
+        return .home
     }
 
     func finishPostFlowDismissal() {

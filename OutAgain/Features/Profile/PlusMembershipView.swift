@@ -23,22 +23,23 @@ struct PlusMembershipView: View {
                                 }
                         }.buttonStyle(.plain)
                         backgroundPurchase(background)
-                        Text("Or get every background with Plus")
-                            .font(AppTypography.rowSubtitle).foregroundStyle(.secondary)
+                        Text("Out Again+")
+                            .font(AppTypography.sectionTitle)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 8)
                     }
 
-                    VStack(spacing: 10) {
-                        Text("Out Again+").font(AppTypography.brandHero)
-                        Text(store.purchases.isPlus ? "Your membership is active" : "No ads. Every background. Your Plus badge.")
-                            .font(AppTypography.rowSubtitle).foregroundStyle(.secondary)
+                    if store.purchases.isPlus {
+                        Label("Membership active", systemImage: "checkmark.circle.fill")
+                            .font(AppTypography.rowTitle)
                     }
 
                     NightPanel(cornerRadius: 28) {
                         VStack(alignment: .leading, spacing: 20) {
-                            benefit("No ads", symbol: "sparkles", detail: "No sponsored cards in your feed.")
-                            benefit("Every background", symbol: "paintpalette.fill", detail: "All backgrounds and customization while you're a member.")
-                            benefit("Plus checkmark", symbol: "checkmark.seal.fill", detail: "A badge that shows you're an Out Again+ member.")
-                            benefit("Out Again+", symbol: "plus.circle.fill", detail: "Your membership name appears inside the app.")
+                            benefit("Ad-free feed", symbol: "sparkles")
+                            benefit("Every background", symbol: "paintpalette.fill")
+                            benefit("Plus membership badge", symbol: "checkmark.seal.fill")
+                            benefit("Out Again+ in the app", symbol: "plus.circle.fill")
                         }
                     }
 
@@ -52,10 +53,14 @@ struct PlusMembershipView: View {
                             purchaseButton(PurchaseCatalog.monthly, period: "month")
                             purchaseButton(PurchaseCatalog.yearly, period: "year")
                             if store.purchases.isLoadingProducts { ProgressView() }
-                            Text("Payment is charged to your Apple Account. Subscriptions renew automatically unless canceled at least 24 hours before the current period ends. Manage or cancel in your App Store account settings.")
+                            Text("Billed to your Apple Account. Renews automatically unless canceled at least 24 hours before renewal. Manage in App Store settings.")
                                 .font(AppTypography.metadata).foregroundStyle(.secondary)
                         }
                     }
+
+                    Text("Background access lasts while subscribed.")
+                        .font(AppTypography.metadata).foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
 
                     if let message = store.purchases.message {
                         Text(message).font(AppTypography.rowSubtitle)
@@ -69,9 +74,6 @@ struct PlusMembershipView: View {
                         Link("Terms", destination: URL(string: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/")!)
                     }
                     .font(AppTypography.metadata)
-                    Text("Accent colors and the 11B background are always free. The Plus checkmark represents membership, not identity verification.")
-                        .font(AppTypography.metadata).foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
                 }
                 .frame(maxWidth: 520)
                 .padding(24)
@@ -92,13 +94,11 @@ struct PlusMembershipView: View {
         }
     }
 
-    private func benefit(_ title: String, symbol: String, detail: String) -> some View {
-        HStack(alignment: .top, spacing: 16) {
+    private func benefit(_ title: String, symbol: String) -> some View {
+        HStack(spacing: 16) {
             Image(systemName: symbol).font(.title2).frame(width: 30)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(AppTypography.rowTitle)
-                Text(detail).font(AppTypography.rowSubtitle).foregroundStyle(.secondary)
-            }
+            Text(title).font(AppTypography.rowTitle)
+            Spacer(minLength: 0)
         }
     }
 
@@ -117,6 +117,7 @@ struct PlusMembershipView: View {
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(.glassProminent)
+            .foregroundStyle(AppTheme.foregroundOnAccent(store.accentColorChoice.color))
             .disabled(store.purchases.isPurchasing)
         }
     }
@@ -125,7 +126,9 @@ struct PlusMembershipView: View {
     private func backgroundPurchase(_ theme: BackgroundTheme) -> some View {
         if store.purchases.canUse(theme) {
             Button("Use \(theme.label)") { store.backgroundTheme = theme; dismiss() }
-                .buttonStyle(.glassProminent).controlSize(.large)
+                .buttonStyle(.glassProminent)
+                .foregroundStyle(AppTheme.foregroundOnAccent(store.accentColorChoice.color))
+                .controlSize(.large)
         } else if let id = PurchaseCatalog.backgroundID(theme.rawValue), let product = store.purchases.product(id) {
             VStack(spacing: 8) {
                 Button("Buy \(theme.label) · \(product.displayPrice)") {
@@ -136,9 +139,11 @@ struct PlusMembershipView: View {
                         }
                     }
                 }
-                .buttonStyle(.glassProminent).controlSize(.large)
+                .buttonStyle(.glassProminent)
+                .foregroundStyle(AppTheme.foregroundOnAccent(store.accentColorChoice.color))
+                .controlSize(.large)
                 .disabled(store.purchases.isPurchasing)
-                Text("One-time purchase. Yours to keep without a subscription.")
+                Text("One-time purchase. Keep it without Plus.")
                     .font(AppTypography.metadata).foregroundStyle(.secondary)
             }
         }
@@ -160,26 +165,58 @@ private struct BackgroundPreviewView: View {
                     Button("Done", systemImage: "xmark") { dismiss() }
                         .labelStyle(.iconOnly).buttonStyle(.glass).controlSize(.large)
                 }
-                Spacer()
-                NightPanel(cornerRadius: AppLayout.panelRadius) {
-                    VStack(alignment: .leading, spacing: 20) {
-                        Label(store.viewerIdentity.displayName, systemImage: "person.crop.circle.fill")
-                            .font(AppTypography.feedAuthor)
-                        Text("\(theme.label) preview").font(AppTypography.sheetTitle)
-                        Text("This is how the background looks behind your cards.")
-                            .font(AppTypography.rowSubtitle).foregroundStyle(.secondary)
-                        Label("Your accent color stays the same", systemImage: "paintpalette.fill")
-                            .font(AppTypography.rowSubtitle).foregroundStyle(store.accentColorChoice.color)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                Spacer()
-                Text("Background preview").font(AppTypography.metadata)
-                    .padding(.horizontal, 18).padding(.vertical, 10)
-                    .glassEffect(in: Capsule())
+                Spacer(minLength: 20)
+                previewCard
+                Spacer(minLength: 20)
             }
             .padding(28).frame(maxWidth: 560)
         }
         .foregroundStyle(.white)
+    }
+
+    private var previewCard: some View {
+        let drinks = store.viewerDrinkCounts
+        let total = drinks.reduce(0) { $0 + $1.count }
+        return NightPanel(cornerRadius: AppLayout.panelRadius, padding: 24) {
+            VStack(alignment: .leading, spacing: 24) {
+                HStack(spacing: 12) {
+                    AvatarView(avatar: store.viewerIdentity.avatar, size: 48)
+                    VerifiedProfileLabel(profile: store.viewerIdentity) {
+                        Text(store.viewerIdentity.displayName)
+                            .font(AppTypography.feedAuthor)
+                            .lineLimit(2)
+                    }
+                }
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Tonight").font(AppTypography.sectionTitle)
+                    Spacer()
+                    Text("\(total)")
+                        .font(AppTypography.statTotal)
+                        .foregroundStyle(store.accentColorChoice.color)
+                    Text(total == 1 ? "drink" : "drinks")
+                        .font(AppTypography.rowSubtitle)
+                        .foregroundStyle(AppTheme.softText)
+                }
+                if drinks.isEmpty {
+                    Text("No drinks posted tonight")
+                        .font(AppTypography.rowSubtitle)
+                        .foregroundStyle(AppTheme.softText)
+                } else {
+                    ForEach(Array(drinks.prefix(3).enumerated()), id: \.offset) { _, item in
+                        HStack(spacing: 12) {
+                            DrinkIconView(drink: item.drink, size: 32)
+                            Text(item.drink.name).font(AppTypography.rowTitle)
+                            Spacer(minLength: 8)
+                            Text("\(item.count)")
+                                .font(AppTypography.pill)
+                                .padding(.horizontal, 12).padding(.vertical, 6)
+                                .foregroundStyle(AppTheme.foregroundOnAccent(store.accentColorChoice.color))
+                                .background(store.accentColorChoice.color, in: Capsule())
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 }

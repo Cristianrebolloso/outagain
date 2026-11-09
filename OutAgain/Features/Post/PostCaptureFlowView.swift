@@ -347,13 +347,12 @@ struct PostCaptureFlowView: View {
             isSubmitting: isSubmitting,
             isCaptionFocused: focusedField == .caption,
             isFriendSearchFocused: focusedField == .tagSearch,
-            onClose: closeFlow,
+            onBack: closeFlow,
             onAudience: {
                 focusedField = nil
                 isAudiencePresented = true
             },
             onPost: publishPhoto,
-            onRetake: retakePhoto,
             onInspectPhoto: { focusedField = nil }
         ) {
             composerView()
@@ -1089,21 +1088,26 @@ struct PostCaptureFlowView: View {
     }
 
     private func closeFlow() {
+        guard !isSubmitting else { return }
         captureTimerTask?.cancel()
         focusedField = nil
-        camera.endPresentation(id: presentationID)
-        store.closePostFlow()
-        dismiss()
+        switch store.backFromPostFlow(hasPendingCapture: pendingCapturedPhotoData != nil) {
+        case .camera:
+            resumeCameraAfterReview()
+        case .home:
+            camera.endPresentation(id: presentationID)
+            dismiss()
+        case .unchanged:
+            break
+        }
     }
 
-    private func retakePhoto() {
-        guard !isSubmitting else { return }
+    private func resumeCameraAfterReview() {
         focusedField = nil
         isAudiencePresented = false
         drinkSuggestionTask?.cancel()
         suggestedDrinkID = nil
-        // Retake replaces just the photo; keep any optional details already entered.
-        store.clearDraftCapture(preservingDetails: true)
+        submittedPhotoData = nil
         camera.clearCapture()
         camera.beginPresentation(id: presentationID)
         if !store.isLayoutPreview {
@@ -1142,7 +1146,7 @@ struct PostCaptureFlowView: View {
     }
 
     #if DEBUG
-    /// Exercise the same capture acceptance, Retake, and Post actions with the
+    /// Exercise the same capture acceptance, Back, and Post actions with the
     /// network-free fixture store. Never runs for a signed-in production store.
     @MainActor private func checkReviewFlow() async {
         guard store.isLayoutPreview else { return }
@@ -1153,8 +1157,9 @@ struct PostCaptureFlowView: View {
         store.postDraft.caption = "Keep this caption"
         let friendIDs = Set(store.friends.prefix(1).map(\.id))
         store.postDraft.taggedFriendIDs = friendIDs
-        retakePhoto()
+        closeFlow()
         precondition(!isReviewingCapture && !store.canPublishDraft)
+        precondition(store.isPostFlowPresented, "Back from review must keep the camera open")
         precondition(store.postDraft.caption == "Keep this caption" && store.postDraft.taggedFriendIDs == friendIDs)
         pendingCapturedPhotoData = DuoLayoutFixtures.reviewPhoto()
         try? await Task.sleep(for: .milliseconds(200))
@@ -1169,7 +1174,7 @@ struct PostCaptureFlowView: View {
         precondition(store.posts.count == before, "Failed publish must remove its optimistic post")
         precondition(store.postDraft.caption == "Keep this caption" && store.postDraft.capturedPhotoData != nil)
         precondition(store.postPublishError != nil, "Failed publish must explain how to retry")
-        FileHandle.standardError.write(Data("PASS: capture review, Retake, duplicate-tap guard, failed publish retains photo and details\n".utf8))
+        FileHandle.standardError.write(Data("PASS: capture review, Back to camera, duplicate-tap guard, failed publish retains photo and details\n".utf8))
     }
     #endif
 
@@ -1224,12 +1229,6 @@ struct PostCaptureFlowView: View {
             GlassEffectContainer(spacing: 14) {
                 HStack(spacing: 14) {
                     reviewActionButton(
-                        title: "Retake",
-                        systemImage: "camera.rotate",
-                        prominence: .secondary,
-                        action: retakePhoto
-                    )
-                    reviewActionButton(
                         title: "Post",
                         systemImage: "paperplane.fill",
                         prominence: .primary,
@@ -1239,12 +1238,6 @@ struct PostCaptureFlowView: View {
             }
         } else {
             HStack(spacing: 14) {
-                reviewActionButton(
-                    title: "Retake",
-                    systemImage: "camera.rotate",
-                    prominence: .secondary,
-                    action: retakePhoto
-                )
                 reviewActionButton(
                     title: "Post",
                     systemImage: "paperplane.fill",
@@ -1363,8 +1356,8 @@ private struct FriendTagRow: View {
                                     lineWidth: isSelected ? 2.5 : 1
                                 )
                         )
-                        .shadow(color: isSelected ? accent.opacity(0.34) : .clear, radius: 10, x: 0, y: 0)
                         .glassEffect(.regular.interactive(), in: .capsule)
+                        .background { PostChipSelectionHalo(accent: accent, isSelected: isSelected) }
                         .contentShape(Capsule())
                     }
                     .buttonStyle(.plain)
@@ -1372,18 +1365,17 @@ private struct FriendTagRow: View {
                     .contentShape(Capsule())
                 }
             }
-            .padding(.vertical, 8)
+            .padding(.vertical, 10)
         }
         .contentMargins(.horizontal, horizontalBleed, for: .scrollContent)
         .scrollIndicators(.hidden)
-        .scrollClipDisabled()
         .horizontalScrollEdgeFade(width: fadeWidth, tolerance: edgeTolerance)
         .padding(.horizontal, -horizontalBleed)
     }
 }
 
 /// The optional fields live directly below the captured photo. The review owns
-/// scrolling and the persistent Post/Retake footer so there is only one form.
+/// scrolling and the persistent Post footer so there is only one form.
 private struct CaptureComposerView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.appAccent) private var accent
@@ -2228,11 +2220,12 @@ private struct DrinkPillGrid: View {
                         pill(drink)
                     }
                 }
-                .padding(.vertical, 3)
+                .padding(.vertical, 10)
             }
+            .contentMargins(.horizontal, 10, for: .scrollContent)
             .fixedSize(horizontal: false, vertical: true)
-            .scrollClipDisabled()
             .horizontalScrollEdgeFade(width: 18, tolerance: 2)
+            .padding(.horizontal, -10)
             .onAppear {
                 if let selected = selectedDrinkIDs.first { scroll.scrollTo(selected, anchor: .center) }
             }
@@ -2272,14 +2265,34 @@ private struct DrinkPillGrid: View {
                         lineWidth: isSelected ? 2.5 : 1.5
                     )
             )
-            .shadow(color: isSelected ? accent.opacity(0.34) : .clear, radius: 10, x: 0, y: 0)
             .glassEffect(.regular.interactive(), in: .capsule)
+            .background { PostChipSelectionHalo(accent: accent, isSelected: isSelected) }
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .contentShape(Capsule())
-        .padding(.vertical, 5)
+    }
+}
+
+/// Unlike a blurred shadow, this glow reaches transparent within a fixed
+/// eight-point inset. Row padding contains it without opening horizontal clips.
+private struct PostChipSelectionHalo: View {
+    let accent: Color
+    let isSelected: Bool
+
+    var body: some View {
+        if isSelected {
+            EllipticalGradient(
+                colors: [accent.opacity(0.30), accent.opacity(0.12), .clear],
+                center: .center,
+                startRadiusFraction: 0.35,
+                endRadiusFraction: 0.5
+            )
+            .padding(-8)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
     }
 }
 

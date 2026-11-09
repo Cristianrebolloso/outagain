@@ -66,6 +66,7 @@ enum DuoLayoutFixtures {
             checkProfileThemeRestoration()
         }
         store.viewer = viewer
+        if ProcessInfo.processInfo.arguments.contains("--white-accent-preview") { store.accentColorChoice = .white }
         store.authState = .signedIn
         store.onboardingStep = .done
         store.bootstrapPhase = .ready

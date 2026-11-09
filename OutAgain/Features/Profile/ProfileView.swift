@@ -21,7 +21,6 @@ struct ProfileView: View {
     @State private var pageRoute: ProfileOverlayRoute?
     @State private var selectedSection: ProfileSection = .moments
     @State private var detailPost: MomentPost?
-    @State private var isShowingRefreshConfirmation = false
     @State private var isShowingProfileSavedConfirmation = false
     @State private var isTabRefreshing = false
     @State private var profileScrollOffset: CGFloat = 0
@@ -78,7 +77,6 @@ struct ProfileView: View {
 
     private var profileConfirmationText: String? {
         if isShowingProfileSavedConfirmation { return "Profile saved" }
-        if isShowingRefreshConfirmation { return "Refreshed" }
         return nil
     }
 
@@ -289,7 +287,6 @@ struct ProfileView: View {
 
     private func showProfileSavedConfirmation() async {
         await MainActor.run {
-            isShowingRefreshConfirmation = false
             withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
                 isShowingProfileSavedConfirmation = true
             }
@@ -322,7 +319,6 @@ struct ProfileView: View {
             }
         }
 
-        await showRefreshConfirmation()
     }
 
     private func refreshProfileData() async {
@@ -337,21 +333,6 @@ struct ProfileView: View {
         friendNightsOut = []
     }
 
-    private func showRefreshConfirmation() async {
-        await MainActor.run {
-            withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
-                isShowingRefreshConfirmation = true
-            }
-        }
-
-        try? await Task.sleep(for: .seconds(1.1))
-
-        await MainActor.run {
-            withAnimation(.spring(response: 0.28, dampingFraction: 0.9)) {
-                isShowingRefreshConfirmation = false
-            }
-        }
-    }
 
     private func reloadViewerProfilePosts(for viewer: UserProfile) async {
         // Reset pagination cursors but keep the existing posts array visible
@@ -915,7 +896,7 @@ struct SharedProfileHeader<ActionContent: View>: View {
     private var editProfileBadge: some View {
         Image(systemName: "pencil")
             .font(.system(size: 12, weight: .bold))
-            .foregroundStyle(.white)
+            .foregroundStyle(AppTheme.foregroundOnAccent(accent))
             .frame(width: isProminent ? 34 : 28, height: isProminent ? 34 : 28)
             .background(accent.opacity(0.82), in: Circle())
             .overlay(

@@ -189,7 +189,7 @@ private struct AdminFeedAdsView: View {
                             }
                         ))
                         .font(AppTypography.rowTitle)
-                        .tint(accent)
+                        .toggleStyle(AppAccentToggleStyle(accent: accent))
                         .disabled(isSaving)
                         .accessibilityIdentifier("admin.feedAds.enabled")
 

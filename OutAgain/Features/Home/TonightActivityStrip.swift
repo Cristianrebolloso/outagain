@@ -24,24 +24,15 @@ struct TonightActivityStrip: View {
                     .foregroundStyle(.white)
                 Spacer(minLength: 4)
                 Button(action: onCreateGroupTap) {
-                    Image(systemName: "person.badge.plus")
-                        .font(AppTypography.button)
-                        .frame(minWidth: 36, minHeight: 36)
-                }
-                .buttonStyle(.glass)
-                .tint(.white)
-                .accessibilityLabel("Create Group")
-                Button {
-                    store.openPostFlow()
-                } label: {
-                    Label("Post", systemImage: "camera.fill")
+                    Label("Groups", systemImage: "person.3.fill")
                         .font(AppTypography.button)
                         .padding(.horizontal, 4)
                         .frame(minHeight: 36)
                 }
-                .buttonStyle(.glassProminent)
-                .tint(accent)
-                .accessibilityIdentifier("home.post")
+                .buttonStyle(.glass)
+                .tint(.white)
+                .accessibilityHint("Create a group")
+                .accessibilityIdentifier("home.groups")
             }
             .padding(.horizontal, AppLayout.screenPadding)
 

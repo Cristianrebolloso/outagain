@@ -68,14 +68,6 @@ struct ShareSocialInviteView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 24) {
-                    VStack(spacing: 8) {
-                        Text(groupID == nil ? "Get your friends on Out Again" : "Bring your friends into the group")
-                            .font(AppTypography.sheetTitle)
-                        Text("Share your drinks. Keep up with each other’s nights.")
-                            .font(AppTypography.rowSubtitle)
-                            .foregroundStyle(AppTheme.softText)
-                    }
-                    .multilineTextAlignment(.center)
                     if let invite {
                         if let qr = InviteQRCode.image(for: invite.url) {
                             Image(uiImage: qr)
@@ -104,6 +96,7 @@ struct ShareSocialInviteView: View {
                                 .frame(maxWidth: .infinity, minHeight: 50)
                         }
                         .buttonStyle(.glassProminent)
+                        .foregroundStyle(AppTheme.foregroundOnAccent(store.accentColorChoice.color))
                         .accessibilityIdentifier("friends.invite.share-link")
                         Button {
                             UIPasteboard.general.string = invite.url.absoluteString
@@ -114,7 +107,7 @@ struct ShareSocialInviteView: View {
                                 .frame(maxWidth: .infinity, minHeight: 44)
                         }
                         .buttonStyle(.glass)
-                        Text("Invite expires \(invite.expiresAt.formatted(date: .abbreviated, time: .omitted)). Friends can open the link again after installing, or paste it in People → Use code.")
+                        Text("Expires \(invite.expiresAt.formatted(date: .abbreviated, time: groupID == nil ? .omitted : .shortened))")
                             .font(AppTypography.footnote)
                             .foregroundStyle(AppTheme.softText)
                             .multilineTextAlignment(.center)
@@ -186,13 +179,11 @@ struct RedeemSocialInviteView: View {
                              ? "You’ll see each other’s posts once you’re friends."
                              : "You’ve joined the group. Members’ posts stay friends-only, so add each other to see them.")
                             .font(AppTypography.body).foregroundStyle(AppTheme.softText)
-                        Button("Done") { dismiss() }.buttonStyle(.glassProminent)
+                        Button("Done") { dismiss() }
+                            .buttonStyle(.glassProminent)
+                            .foregroundStyle(AppTheme.foregroundOnAccent(store.accentColorChoice.color))
                     } else {
-                        Text("Join your friends")
-                            .font(AppTypography.sheetTitle)
-                        Text("Paste an Out Again invite link or code.")
-                            .font(AppTypography.rowSubtitle).foregroundStyle(AppTheme.softText)
-                        TextField("Invite link or code", text: $input, axis: .vertical)
+                        TextField("Paste invite link or code", text: $input, axis: .vertical)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .font(AppTypography.body)
@@ -225,6 +216,7 @@ struct RedeemSocialInviteView: View {
                                 }.frame(maxWidth: .infinity, minHeight: 48)
                             }
                             .buttonStyle(.glassProminent)
+                            .foregroundStyle(AppTheme.foregroundOnAccent(store.accentColorChoice.color))
                             .disabled(isWorking || store.viewer == nil || invite.inviterID == store.viewer?.id)
                             .accessibilityIdentifier("friends.invite.accept")
                         } else {
@@ -235,6 +227,7 @@ struct RedeemSocialInviteView: View {
                                 }.frame(maxWidth: .infinity, minHeight: 48)
                             }
                             .buttonStyle(.glassProminent)
+                            .foregroundStyle(AppTheme.foregroundOnAccent(store.accentColorChoice.color))
                             .disabled(isWorking || input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         }
                         if let errorMessage {

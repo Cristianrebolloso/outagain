@@ -102,8 +102,9 @@ struct ProfileSettingsView: View {
                     Image(systemName: "checkmark.seal.fill").font(.title)
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Out Again+").font(AppTypography.sheetTitle)
-                        Text(store.purchases.isPlus ? "Your membership is active" : "No ads. Every background. Your Plus badge.")
-                            .font(AppTypography.rowSubtitle).foregroundStyle(.secondary)
+                        if store.purchases.isPlus {
+                            Text("Active").font(AppTypography.metadata).foregroundStyle(.secondary)
+                        }
                     }
                     Spacer(minLength: 0)
                     Image(systemName: "chevron.right").foregroundStyle(.secondary)
@@ -115,21 +116,13 @@ struct ProfileSettingsView: View {
     }
 
     private var accentColorPanel: some View {
-        // Build the accent panel with `padding: 0` so the horizontal scroll
-        // rows can extend edge-to-edge inside the panel. The text rows are
-        // re-inset to the original 18pt manually below; the scroll views
-        // use `.contentMargins(.horizontal, 18)` so they look inset at rest
-        // but let content travel right to the panel edge when scrolled.
-        // This eliminates the visual "blocker" where scrolling stopped 18pt
-        // shy of the panel's border. The scroll views also get extra
-        // vertical content padding so the selected-item glow shadow has
-        // room to render without being clipped by the scroll view's bounds.
+        // Insets keep horizontally scrolling choices inside the glass panel.
         NightPanel(cornerRadius: AppLayout.panelRadius, padding: 0) {
             VStack(alignment: .leading, spacing: 14) {
                 settingsSectionTitle("Appearance")
                     .padding(.horizontal, 18)
 
-                Text("Accent Color · Free")
+                Text("Accent Color")
                     .font(AppTypography.rowTitle)
                     .foregroundStyle(.white)
                     .padding(.horizontal, 18)
@@ -153,7 +146,13 @@ struct ProfileSettingsView: View {
                                             lineWidth: isSelected ? 2.5 : 1
                                         )
                                     )
-                                    .shadow(color: choice.color.opacity(isSelected ? 0.6 : 0), radius: 8)
+                                    .background {
+                                        if isSelected {
+                                            Circle()
+                                                .fill(RadialGradient(colors: [choice.color.opacity(0.36), .clear], center: .center, startRadius: 16, endRadius: 34))
+                                                .frame(width: 68, height: 68)
+                                        }
+                                    }
 
                                 if isSelected {
                                     Image(systemName: "checkmark")
@@ -167,10 +166,8 @@ struct ProfileSettingsView: View {
                         .animation(.snappy(duration: 0.22), value: isSelected)
                     }
                 }
-                // 18pt vertical padding gives the selected-item glow shadow
-                // (8pt blur radius, scaled 1.12x) room to render fully
-                // without being clipped by the scroll view's bounds.
-                .padding(.vertical, 18)
+                // The halo fades to transparent inside these bounds.
+                .padding(.vertical, 24)
                 .padding(.horizontal, 2)
                 }
                 .contentMargins(.horizontal, 18, for: .scrollContent)
@@ -229,7 +226,8 @@ struct ProfileSettingsView: View {
                                                 lineWidth: isSelected ? 2.5 : 1
                                             )
                                     )
-                                    .shadow(color: {
+                                    .background {
+                                        Circle().fill(RadialGradient(colors: [{
                                     switch theme {
                                         case .night:    return Color(hex: "#D0E8FF")
                                         case .original: return Color(hex: "#E0A35D")
@@ -240,7 +238,9 @@ struct ProfileSettingsView: View {
                                         case .blue:     return Color(hex: "#0EA5E9")
                                         case .standard: return store.accentColorChoice.color
 }
-                                    }().opacity(isSelected ? 0.5 : 0), radius: 8)
+                                        }().opacity(isSelected ? 0.36 : 0), .clear], center: .center, startRadius: 18, endRadius: 44))
+                                            .frame(width: 88, height: 88)
+                                    }
 
                                 switch theme {
                                 case .night:
@@ -424,10 +424,8 @@ struct ProfileSettingsView: View {
                         .accessibilityHint(store.purchases.canUse(theme) ? "Use background" : "Purchase once or unlock with Out Again Plus")
                     }
                 }
-                // Same vertical-padding rationale as the accent row above:
-                // give the selected-item glow shadow room to render without
-                // being clipped by the scroll view's bounds.
-                .padding(.vertical, 18)
+                // Keep the finite halo inside the scroll viewport.
+                .padding(.vertical, 26)
                 .padding(.horizontal, 2)
                 }
                 .contentMargins(.horizontal, 18, for: .scrollContent)
@@ -521,7 +519,7 @@ struct ProfileSettingsView: View {
                 }
             }
         }
-        .tint(store.accentColorChoice.color)
+        .toggleStyle(AppAccentToggleStyle(accent: store.accentColorChoice.color))
         .padding(.vertical, 4)
     }
 
@@ -804,7 +802,7 @@ struct ProfileSettingsView: View {
                 }
             }
         }
-        .tint(store.accentColorChoice.color)
+        .toggleStyle(AppAccentToggleStyle(accent: store.accentColorChoice.color))
         .padding(.vertical, 8)
     }
 

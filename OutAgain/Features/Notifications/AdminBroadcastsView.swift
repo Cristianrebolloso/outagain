@@ -219,7 +219,7 @@ struct AdminBroadcastsView: View {
                         }
                     ))
                         .labelsHidden()
-                        .tint(accent)
+                        .toggleStyle(AppAccentToggleStyle(accent: accent, showsLabel: false))
                         .disabled(isSavingMaintenance)
                 }
 
@@ -501,7 +501,7 @@ struct AdminBroadcastsView: View {
         HStack(spacing: 8) {
             if isLoading {
                 ProgressView()
-                    .tint(.white)
+                    .tint(AppTheme.foregroundOnAccent(accent))
                     .controlSize(.small)
             } else {
                 Image(systemName: symbol)

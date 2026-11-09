@@ -113,13 +113,8 @@ struct LocalFeedEmptyState: View {
                     Text("Use your location to see recent photos around you.").font(AppTypography.rowSubtitle)
                     Button("Use My Location") { permissions.requestLocation() }.buttonStyle(.glass)
                 } else {
-                    Label("It's quiet around here 😳", systemImage: "moon.stars")
+                    Label("No nearby posts yet", systemImage: "moon.stars")
                         .font(AppTypography.rowTitle)
-                    Text("Be the first to share a photo to Local tonight")
-                        .font(AppTypography.rowSubtitle)
-                    Button("Take a Photo") { store.openPostFlow() }
-                        .buttonStyle(.glass)
-                        .frame(maxWidth: .infinity, alignment: .center)
                 }
             }
             .foregroundStyle(.white)
@@ -167,29 +162,16 @@ struct FriendsFeedEmptyState: View {
                 Image(systemName: "camera.fill")
                     .font(.system(size: 24, weight: .semibold))
                     .foregroundStyle(accent)
-                Text("Your night starts here")
+                Text("No posts yet")
                     .font(AppTypography.sectionTitle)
                     .foregroundStyle(.white)
-                Text("Post what you're drinking and see what your friends are up to.")
-                    .font(AppTypography.rowSubtitle)
-                    .foregroundStyle(AppTheme.softText)
-                    .fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 12) {
-                    Button { store.openPostFlow() } label: {
-                        Label("Post", systemImage: "camera.fill")
-                            .font(AppTypography.button)
-                            .frame(minHeight: 36)
-                    }
-                    .buttonStyle(.glassProminent)
-                    .tint(accent)
-                    Button { store.selectedTab = .friends } label: {
-                        Text("Find Friends")
-                            .font(AppTypography.button)
-                            .frame(minHeight: 36)
-                    }
-                    .buttonStyle(.glass)
-                    .tint(.white)
+                Button { store.selectedTab = .friends } label: {
+                    Text("Find Friends")
+                        .font(AppTypography.button)
+                        .frame(minHeight: 36)
                 }
+                .buttonStyle(.glass)
+                .tint(.white)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }

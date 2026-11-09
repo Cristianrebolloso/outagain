@@ -58,7 +58,14 @@ struct AppRootView: View {
                     .zIndex(3)
 
                 if store.bootstrapPhase == .pending {
-                    LaunchSplashView()
+                    // Resolve the full viewport before placing the logo. Letting
+                    // the logo itself expand beyond a safe-area-sized parent
+                    // briefly centers its first glass frame inside Duo's rail.
+                    GeometryReader { viewport in
+                        LaunchSplashView()
+                            .frame(width: viewport.size.width, height: viewport.size.height)
+                    }
+                        .ignoresSafeArea(.container)
                         .background(AmbientBackground())
                         .environment(\.defaultBackgroundPhase, .default1)
                         .transition(.asymmetric(
@@ -231,16 +238,12 @@ private struct MaintenanceUnavailableView: View {
 /// Shown during the first bootstrap, before we know whether the viewer is
 /// signed in. The frosted glass logo adapts to the user's themed background.
 private struct LaunchSplashView: View {
-    @Environment(AppStore.self) private var store
-
     var body: some View {
         LiquidGlassClinkLogo()
             .frame(maxWidth: 220)
+            .accessibilityIdentifier("launch.logo")
             .padding(.horizontal, AppLayout.screenPadding)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            // Duo reserves an asymmetric status area. Center the mark in the
-            // current display bounds, including through folds and rotations.
-            .ignoresSafeArea(.container, edges: store.isDuoDevice ? .all : [])
     }
 }
 

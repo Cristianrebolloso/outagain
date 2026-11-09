@@ -111,7 +111,6 @@ struct AddFriendsSheet: View {
     @State private var selectedProfile: UserProfile?
     @State private var inlineProfile: UserProfile?
     @State private var isDuoExpanded = false
-    @State private var isShowingRefreshConfirmation = false
     @State private var isTabRefreshing = false
     @State private var friendsScrollOffset: CGFloat = 0
     @State private var isTitleScrolled = false
@@ -188,26 +187,6 @@ struct AddFriendsSheet: View {
                 .onTapGesture { isSearchFocused = false }
                 // Prevent keyboard from pushing this view (and the tab bar) upward.
                 .ignoresSafeArea(.keyboard, edges: .bottom)
-                .overlay(alignment: .top) {
-                    if isShowingRefreshConfirmation {
-                        HStack(spacing: 8) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundStyle(accent)
-                            Text("Refreshed")
-                                .font(AppTypography.button)
-                                .foregroundStyle(.white)
-                        }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .background(.black.opacity(0.72), in: Capsule())
-                        .overlay(
-                            Capsule()
-                                .strokeBorder(AppTheme.line, lineWidth: 1)
-                        )
-                        .padding(.top, 8)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                    }
-                }
                 .navigationDestination(item: $selectedProfile) { profile in
                     FriendProfileView(profile: profile, presentationStyle: .embedded)
                 }
@@ -301,26 +280,6 @@ struct AddFriendsSheet: View {
                     .onTapGesture { isSearchFocused = false }
                     // Prevent keyboard from pushing this view (and the tab bar) upward.
                     .ignoresSafeArea(.keyboard, edges: .bottom)
-                    .overlay(alignment: .top) {
-                        if isShowingRefreshConfirmation {
-                            HStack(spacing: 8) {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundStyle(accent)
-                                Text("Refreshed")
-                                    .font(AppTypography.button)
-                                    .foregroundStyle(.white)
-                            }
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 10)
-                            .background(.black.opacity(0.72), in: Capsule())
-                            .overlay(
-                                Capsule()
-                                    .strokeBorder(AppTheme.line, lineWidth: 1)
-                            )
-                            .padding(.top, 8)
-                            .transition(.move(edge: .top).combined(with: .opacity))
-                        }
-                    }
                     .navigationDestination(item: $selectedProfile) { profile in
                         FriendProfileView(profile: profile, presentationStyle: .embedded)
                     }
@@ -392,28 +351,12 @@ struct AddFriendsSheet: View {
             }
         }
 
-        await showRefreshConfirmation()
     }
 
     private func refreshFriendsData() async {
         await store.refreshAppData(silenceErrors: true)
     }
 
-    private func showRefreshConfirmation() async {
-        await MainActor.run {
-            withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
-                isShowingRefreshConfirmation = true
-            }
-        }
-
-        try? await Task.sleep(for: .seconds(1.1))
-
-        await MainActor.run {
-            withAnimation(.spring(response: 0.28, dampingFraction: 0.9)) {
-                isShowingRefreshConfirmation = false
-            }
-        }
-    }
 
     @ViewBuilder
     private func peopleSection(store: AppStore) -> some View {

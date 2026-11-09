@@ -3,6 +3,57 @@ import ImageIO
 import SwiftUI
 import UIKit
 
+/// Retains the native switch while giving a white accent a contrasting thumb.
+struct AppAccentToggleStyle: ToggleStyle {
+    let accent: Color
+    var showsLabel = true
+
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 12) {
+            if showsLabel {
+                configuration.label
+                Spacer(minLength: 0)
+            }
+            AccentNativeSwitch(isOn: configuration.$isOn, accent: accent)
+                .fixedSize()
+        }
+        .accessibilityRepresentation {
+            Toggle(isOn: configuration.$isOn) { configuration.label }
+                .toggleStyle(.switch)
+        }
+    }
+}
+
+private struct AccentNativeSwitch: UIViewRepresentable {
+    @Binding var isOn: Bool
+    let accent: Color
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeUIView(context: Context) -> UISwitch {
+        let control = UISwitch()
+        control.addTarget(context.coordinator, action: #selector(Coordinator.changed(_:)), for: .valueChanged)
+        control.setContentHuggingPriority(.required, for: .horizontal)
+        control.setContentCompressionResistancePriority(.required, for: .horizontal)
+        return control
+    }
+
+    func updateUIView(_ control: UISwitch, context: Context) {
+        context.coordinator.isOn = $isOn
+        control.isEnabled = isEnabled
+        control.onTintColor = UIColor(accent)
+        control.thumbTintColor = accent == .white && isOn ? UIColor(white: 0.12, alpha: 1) : nil
+        control.setOn(isOn, animated: control.window != nil)
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(isOn: $isOn) }
+
+    final class Coordinator: NSObject {
+        var isOn: Binding<Bool>
+        init(isOn: Binding<Bool>) { self.isOn = isOn }
+        @objc func changed(_ control: UISwitch) { isOn.wrappedValue = control.isOn }
+    }
+}
+
 extension Date {
     private static let minuteRelativeFormatter: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()

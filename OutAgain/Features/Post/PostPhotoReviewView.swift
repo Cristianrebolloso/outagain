@@ -21,10 +21,9 @@ struct PostPhotoReviewView<Details: View>: View {
     let isSubmitting: Bool
     let isCaptionFocused: Bool
     let isFriendSearchFocused: Bool
-    let onClose: () -> Void
+    let onBack: () -> Void
     let onAudience: () -> Void
     let onPost: () -> Void
-    let onRetake: () -> Void
     let onInspectPhoto: () -> Void
     @ViewBuilder let details: Details
 
@@ -80,9 +79,9 @@ struct PostPhotoReviewView<Details: View>: View {
         .toolbarBackground(.hidden, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
-                Button(isPhotoExpanded ? "Close photo" : "Close", systemImage: "chevron.left") {
+                Button(isPhotoExpanded ? "Close photo" : "Back", systemImage: "chevron.left") {
                     if isPhotoExpanded { togglePhotoExpansion() }
-                    else { onClose() }
+                    else { onBack() }
                 }
                     .tint(.white)
                     .accessibilityIdentifier("post.close")
@@ -315,17 +314,6 @@ struct PostPhotoReviewView<Details: View>: View {
                     .padding(.bottom, 4)
             }
             PostSubmitButton(isEnabled: canPost && !isSubmitting, isSubmitting: isSubmitting, action: onPost)
-            if !isEditingDetails {
-                Button(action: onRetake) {
-                    Text("Retake")
-                        .font(AppTypography.rowSubtitle)
-                        .foregroundStyle(AppTheme.softText)
-                        .frame(maxWidth: .infinity, minHeight: 44)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("post.retake")
-            }
         }
         .padding(.horizontal, 20)
         .padding(.top, 10)
@@ -452,7 +440,7 @@ struct PostAudienceSheet: View {
                         Label("Also share to Local", systemImage: "location.circle")
                             .font(AppTypography.rowTitle)
                     }
-                    .tint(accent)
+                    .toggleStyle(AppAccentToggleStyle(accent: accent))
                     .accessibilityIdentifier("post.shareLocally")
                     if store.postDraft.shareLocally {
                         Text("Your post will be visible to anyone within 35 miles of your location for 48 hours.")

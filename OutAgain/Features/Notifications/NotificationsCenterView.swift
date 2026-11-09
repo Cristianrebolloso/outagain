@@ -10,7 +10,6 @@ struct ActivityView: View {
     @State private var selectedNotificationID: UUID?
     @State private var isDuoExpanded = false
     @State private var profileNavigationTarget: UserProfile?
-    @State private var isShowingRefreshConfirmation = false
     @State private var isTabRefreshing = false
     @State private var isTitleScrolled = false
     @State private var expandedNotificationBundles: Set<String> = []
@@ -200,16 +199,6 @@ struct ActivityView: View {
                 HStack(alignment: .firstTextBaseline) {
                     ScrollingPageTitle(title: "Activity", isScrolled: isTitleScrolled)
                     Spacer()
-                    if !store.notifications.isEmpty {
-                        Button("Clear All") {
-                            withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                                store.clearAllNotifications()
-                            }
-                        }
-                        .font(AppTypography.button)
-                        .foregroundStyle(.white)
-                        .buttonStyle(.glass)
-                    }
                 }
                 .padding(.horizontal, 14)
                 .padding(.top, 12)
@@ -238,26 +227,6 @@ struct ActivityView: View {
                 else { return }
 
                 await refreshActivityData()
-            }
-            .overlay(alignment: .top) {
-                if isShowingRefreshConfirmation {
-                    HStack(spacing: 8) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(accent)
-                        Text("Refreshed")
-                            .font(AppTypography.button)
-                            .foregroundStyle(.white)
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(.black.opacity(0.72), in: Capsule())
-                    .overlay(
-                        Capsule()
-                            .strokeBorder(AppTheme.line, lineWidth: 1)
-                    )
-                    .padding(.top, 8)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-                }
             }
             .sheet(item: $activeSheet) { sheet in
                 switch sheet {
@@ -297,13 +266,6 @@ struct ActivityView: View {
                 .modifier(DuoScrollPreviewControls())
                 #endif
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .toolbar {
-                    if !store.notifications.isEmpty {
-                        ToolbarItem(placement: .topBarTrailing) {
-                            clearActivityButton
-                        }
-                    }
-                }
                 .toolbarBackground(.hidden, for: .navigationBar)
                 .navigationBarTitleDisplayMode(.inline)
                 .modifier(DuoPageHeader(title: "Activity", isScrolled: isTitleScrolled))
@@ -331,26 +293,6 @@ struct ActivityView: View {
                     else { return }
 
                     await refreshActivityData()
-                }
-                .overlay(alignment: .top) {
-                    if isShowingRefreshConfirmation {
-                        HStack(spacing: 8) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundStyle(accent)
-                            Text("Refreshed")
-                                .font(AppTypography.button)
-                                .foregroundStyle(.white)
-                        }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .background(.black.opacity(0.72), in: Capsule())
-                        .overlay(
-                            Capsule()
-                                .strokeBorder(AppTheme.line, lineWidth: 1)
-                        )
-                        .padding(.top, 8)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                    }
                 }
                 .sheet(item: $activeSheet) { sheet in
                     switch sheet {
@@ -391,16 +333,6 @@ struct ActivityView: View {
         }
     }
 
-    private var clearActivityButton: some View {
-        Button("Clear All", systemImage: "trash") {
-            withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                store.clearAllNotifications()
-            }
-        }
-        .labelStyle(.iconOnly)
-        .accessibilityIdentifier("activity.clearAll")
-    }
-
     private var selectedNotification: AppNotification? {
         if let selectedNotificationID,
            let selected = store.notifications.first(where: { $0.id == selectedNotificationID }) {
@@ -439,7 +371,6 @@ struct ActivityView: View {
             }
         }
 
-        await showRefreshConfirmation()
     }
 
     private func refreshActivityData() async {
@@ -447,21 +378,6 @@ struct ActivityView: View {
         store.markActivityAsSeen()
     }
 
-    private func showRefreshConfirmation() async {
-        await MainActor.run {
-            withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
-                isShowingRefreshConfirmation = true
-            }
-        }
-
-        try? await Task.sleep(for: .seconds(1.1))
-
-        await MainActor.run {
-            withAnimation(.spring(response: 0.28, dampingFraction: 0.9)) {
-                isShowingRefreshConfirmation = false
-            }
-        }
-    }
 
     private var emptyState: some View {
         NightPanel(cornerRadius: 28, padding: 20) {
