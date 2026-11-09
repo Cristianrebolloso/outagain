@@ -15,12 +15,8 @@ struct FeedNativeAdCard: View {
                         // Inset the entire SDK view so its AdChoices corner is
                         // inside the glass card, including on rounded edges.
                         .padding(16)
-                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
-                            if height > 0 { slot.measuredHeight = height }
-                        }
                 } else {
-                    FeedHousePromoCard()
-                        .frame(minHeight: slot.measuredHeight > 0 ? slot.measuredHeight : nil)
+                    FeedAdCardLayout { FeedHousePromoCard() }
                 }
             }
             .primaryGlass(in: .roundedRect(cornerRadius: PostPhotoFormat.cornerRadius))
@@ -31,12 +27,29 @@ struct FeedNativeAdCard: View {
     }
 }
 
+/// The fallback shares the live card's regular-post footprint before an ad loads.
+struct FeedAdCardLayout: Layout {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? 320
+        let contentHeight = subviews.map {
+            $0.sizeThatFits(ProposedViewSize(width: width, height: nil)).height
+        }.max() ?? 0
+        return CGSize(width: width, height: max(FeedAdMediaLayout.cardHeight(width: width), contentHeight))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for view in subviews {
+            view.place(at: bounds.origin, proposal: ProposedViewSize(bounds.size))
+        }
+    }
+}
+
 /// App-owned fallback, never registered as a Google impression or click.
-private struct FeedHousePromoCard: View {
+struct FeedHousePromoCard: View {
     @Environment(AppStore.self) private var store
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 12) {
                 Image("AppIconPreview")
                     .resizable().scaledToFit()
@@ -60,14 +73,16 @@ private struct FeedHousePromoCard: View {
                 }
                 .padding(24)
             }
-            .frame(height: 260)
-            Text("Catch the moment. Share it with your friends.")
-                .font(AppTypography.body)
-                .foregroundStyle(AppTheme.softText)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             Button { store.openPostFlow() } label: {
-                Label("Take a photo", systemImage: "camera")
-                    .font(AppTypography.actionLabel)
-                    .frame(maxWidth: .infinity).padding(.vertical, 12)
+                ViewThatFits(in: .horizontal) {
+                    Label("Take a photo", systemImage: "camera")
+                        .fixedSize()
+                    Text("Take a photo")
+                        .multilineTextAlignment(.center)
+                }
+                .font(AppTypography.actionLabel)
+                .frame(maxWidth: .infinity).padding(.vertical, 12)
             }
             .buttonStyle(.glass)
         }
@@ -90,25 +105,22 @@ private struct FeedNativeAdContent: UIViewRepresentable {
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: FeedNativeAdUIView,
                      context: Context) -> CGSize? {
         guard let width = proposal.width, width > 0 else { return nil }
-        uiView.mediaHeight.constant = FeedAdMediaLayout.height(width: width, aspectRatio: uiView.mediaAspectRatio)
-        return uiView.systemLayoutSizeFitting(
-            CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
-            withHorizontalFittingPriority: .required,
-            verticalFittingPriority: .fittingSizeLevel
-        )
+        return uiView.fittingSize(width: width)
     }
 }
 
-private final class FeedNativeAdUIView: NativeAdView {
+final class FeedNativeAdUIView: NativeAdView {
     private let advertiser = UILabel()
     private let headline = UILabel()
-    private let bodyLabel = UILabel()
     private let icon = UIImageView()
     private let creative = MediaView()
+    private let mediaContainer = UIView()
+    private lazy var creativeWidth = creative.widthAnchor.constraint(equalToConstant: 120)
+    private lazy var creativeHeight = creative.heightAnchor.constraint(equalToConstant: 120)
     private let actionButton = UIButton(type: .system)
     private let attribution = UILabel()
     private(set) var mediaAspectRatio: CGFloat = 1.5
-    lazy var mediaHeight = creative.heightAnchor.constraint(equalToConstant: 220)
+    private lazy var mediaHeight = mediaContainer.heightAnchor.constraint(equalToConstant: 220)
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -117,8 +129,9 @@ private final class FeedNativeAdUIView: NativeAdView {
         configure(advertiser, size: 15, weight: "Medium", style: .subheadline)
         advertiser.textColor = .white.withAlphaComponent(0.85)
         configure(headline, size: 20, weight: "Semibold", style: .headline)
-        configure(bodyLabel, size: 15, weight: "Regular", style: .body)
-        bodyLabel.textColor = .white.withAlphaComponent(0.85)
+        headline.numberOfLines = 2
+        headline.lineBreakMode = .byTruncatingTail
+        advertiser.numberOfLines = 1
         attribution.font = AppTypography.feedAuthorUIFont
         attribution.adjustsFontForContentSizeCategory = true
         attribution.numberOfLines = 0
@@ -143,6 +156,18 @@ private final class FeedNativeAdUIView: NativeAdView {
         header.alignment = .center
         header.spacing = 12
 
+        header.heightAnchor.constraint(greaterThanOrEqualToConstant: 50).isActive = true
+
+        mediaContainer.backgroundColor = .white.withAlphaComponent(0.035)
+        mediaContainer.layer.cornerRadius = 16
+        mediaContainer.clipsToBounds = true
+        creative.translatesAutoresizingMaskIntoConstraints = false
+        mediaContainer.addSubview(creative)
+        NSLayoutConstraint.activate([
+            creative.centerXAnchor.constraint(equalTo: mediaContainer.centerXAnchor),
+            creative.centerYAnchor.constraint(equalTo: mediaContainer.centerYAnchor),
+            creativeWidth, creativeHeight
+        ])
         creative.contentMode = .scaleAspectFit
         creative.backgroundColor = .clear
         creative.layer.cornerRadius = 16
@@ -180,7 +205,7 @@ private final class FeedNativeAdUIView: NativeAdView {
             disclosure.bottomAnchor.constraint(equalTo: footer.bottomAnchor)
         ])
 
-        let stack = UIStackView(arrangedSubviews: [header, creative, headline, bodyLabel, actionButton, footer])
+        let stack = UIStackView(arrangedSubviews: [header, mediaContainer, headline, actionButton, footer])
         stack.axis = .vertical
         stack.spacing = 12
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -194,7 +219,6 @@ private final class FeedNativeAdUIView: NativeAdView {
 
         advertiserView = advertiser
         headlineView = headline
-        bodyView = bodyLabel
         iconView = icon
         mediaView = creative
         callToActionView = actionButton
@@ -202,24 +226,50 @@ private final class FeedNativeAdUIView: NativeAdView {
 
     required init?(coder: NSCoder) { fatalError("Use init(frame:)") }
 
+    func fittingSize(width: CGFloat) -> CGSize {
+        headline.numberOfLines = traitCollection.preferredContentSizeCategory.isAccessibilityCategory ? 0 : 2
+        mediaHeight.constant = 120
+        let minimum = systemLayoutSizeFitting(
+            CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
+            withHorizontalFittingPriority: .required,
+            verticalFittingPriority: .fittingSizeLevel
+        )
+        let chromeHeight = max(0, minimum.height - 120)
+        mediaHeight.constant = FeedAdMediaLayout.mediaHeight(cardWidth: width + 32, chromeHeight: chromeHeight)
+        return CGSize(width: width, height: chromeHeight + mediaHeight.constant)
+    }
+
+    override func layoutSubviews() {
+        let size = FeedAdMediaLayout.fittedMediaSize(
+            in: CGSize(width: max(0, bounds.width), height: mediaHeight.constant),
+            aspectRatio: mediaAspectRatio)
+        creativeWidth.constant = size.width
+        creativeHeight.constant = size.height
+        super.layoutSubviews()
+    }
+
     func apply(_ ad: NativeAd) {
         guard nativeAd !== ad else { return }
-        advertiser.text = ad.advertiser
-        advertiser.isHidden = ad.advertiser == nil
-        headline.text = ad.headline
-        bodyLabel.text = ad.body
-        bodyLabel.isHidden = ad.body == nil
-        icon.image = ad.icon?.image
-        icon.isHidden = ad.icon == nil
+        configureAssets(headline: ad.headline, advertiser: ad.advertiser, icon: ad.icon?.image,
+                        callToAction: ad.callToAction, aspectRatio: FeedAdMediaLayout.aspectRatio(
+                            reported: ad.mediaContent.aspectRatio,
+                            imageSize: ad.mediaContent.mainImage?.size ?? ad.images?.first?.image?.size))
         creative.mediaContent = ad.mediaContent
-        mediaAspectRatio = FeedAdMediaLayout.aspectRatio(
-            reported: ad.mediaContent.aspectRatio,
-            imageSize: ad.mediaContent.mainImage?.size ?? ad.images?.first?.image?.size
-        )
-        actionButton.setTitle(ad.callToAction, for: .normal)
-        actionButton.isHidden = ad.callToAction == nil
         // Associate last, after every displayed asset is registered/populated.
         nativeAd = ad
+    }
+
+    func configureAssets(headline headlineText: String?, advertiser advertiserText: String?,
+                         icon iconImage: UIImage?, callToAction: String?, aspectRatio: CGFloat) {
+        advertiser.text = advertiserText
+        advertiser.isHidden = advertiserText == nil
+        headline.text = headlineText
+        icon.image = iconImage
+        icon.isHidden = iconImage == nil
+        mediaAspectRatio = aspectRatio
+        actionButton.setTitle(callToAction, for: .normal)
+        actionButton.isHidden = callToAction == nil
+        setNeedsLayout()
     }
 
     private func configure(_ label: UILabel, size: CGFloat, weight: String, style: UIFont.TextStyle) {

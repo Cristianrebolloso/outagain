@@ -609,15 +609,10 @@ struct PostCaptureFlowView: View {
                     .buttonStyle(.glass)
                     .frame(maxWidth: .infinity)
                     if subjectPreviewAvailable && camera.supportsSubjectPreview && camera.lensMode.isRear {
-                        Button {
-                            showsSubjectPreview.toggle()
-                        } label: {
-                            tabletopSecondaryLabel(showsSubjectPreview ? "Preview on" : "Preview", systemImage: "rectangle.on.rectangle")
-                        }
-                        .buttonStyle(.glass)
-                        .frame(maxWidth: .infinity)
-                        .disabled(camera.setupState != .ready)
-                        .accessibilityLabel(showsSubjectPreview ? "Hide preview" : "Show preview")
+                        CameraPreviewToggleButton(
+                            isOn: $showsSubjectPreview,
+                            isEnabled: camera.setupState == .ready
+                        )
                     }
                     Menu {
                         Button("Timer off") { captureDelay = 0 }

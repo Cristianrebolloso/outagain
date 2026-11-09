@@ -68,13 +68,12 @@ struct RegularCameraControls: View {
                     .frame(maxWidth: .infinity)
 
                     if previewAvailable && camera.lensMode.isRear {
-                        Button { showsPreview.toggle() } label: {
-                            CameraControlLabel(title: showsPreview ? "Preview on" : "Preview", systemImage: "rectangle.on.rectangle", height: controlHeight, large: roomy)
-                        }
-                        .buttonStyle(.glass)
-                        .frame(maxWidth: .infinity)
-                        .disabled(camera.setupState != .ready)
-                        .accessibilityLabel(showsPreview ? "Hide preview" : "Show preview")
+                        CameraPreviewToggleButton(
+                            isOn: $showsPreview,
+                            isEnabled: camera.setupState == .ready,
+                            height: controlHeight,
+                            large: roomy
+                        )
                     }
 
                     Menu {
@@ -98,6 +97,34 @@ struct RegularCameraControls: View {
             .tint(.white)
         }
         .accessibilityIdentifier("camera.controls")
+    }
+}
+
+/// One explicit on/off control is shared by the flat and tabletop cameras.
+struct CameraPreviewToggleButton: View {
+    @Binding var isOn: Bool
+    let isEnabled: Bool
+    var height: CGFloat = 96
+    var large = true
+
+    var body: some View {
+        Button { isOn.toggle() } label: {
+            CameraControlLabel(
+                title: isOn ? "Hide preview" : "Show preview",
+                systemImage: isOn ? "rectangle.on.rectangle.fill" : "rectangle.on.rectangle",
+                height: height,
+                large: large
+            )
+        }
+        .buttonStyle(.glass)
+        .frame(maxWidth: .infinity)
+        .disabled(!isEnabled)
+        .accessibilityLabel("Subject preview")
+        .accessibilityValue(isOn ? "On" : "Off")
+        .accessibilityHint(isOn
+            ? "Double-tap to turn off the preview on the other screen."
+            : "Double-tap to turn on the preview on the other screen.")
+        .accessibilityIdentifier("camera.subject.toggle")
     }
 }
 

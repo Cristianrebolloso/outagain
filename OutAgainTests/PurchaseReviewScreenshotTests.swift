@@ -24,8 +24,12 @@ final class PurchaseReviewScreenshotTests: XCTestCase {
         await store.purchases.loadProducts()
         XCTAssertEqual(Set(store.purchases.products.map(\.id)), PurchaseCatalog.allIDs)
         XCTAssertFalse(store.purchases.isPlus)
-        XCTAssertEqual(store.purchases.product(PurchaseCatalog.monthly)?.price, Decimal(string: "0.99"))
-        XCTAssertEqual(store.purchases.product(PurchaseCatalog.yearly)?.price, Decimal(10))
+        let monthly = try XCTUnwrap(store.purchases.product(PurchaseCatalog.monthly))
+        let yearly = try XCTUnwrap(store.purchases.product(PurchaseCatalog.yearly))
+        XCTAssertEqual(monthly.price, Decimal(string: "0.99"))
+        XCTAssertEqual(yearly.price, Decimal(10))
+        XCTAssertEqual(MembershipPriceFormatting.displayPrice(for: monthly), "$0.99")
+        XCTAssertEqual(MembershipPriceFormatting.displayPrice(for: yearly), "$10")
         for id in PurchaseCatalog.allIDs.subtracting([PurchaseCatalog.monthly, PurchaseCatalog.yearly]) {
             XCTAssertEqual(store.purchases.product(id)?.price, Decimal(string: "0.99"))
         }
@@ -83,6 +87,6 @@ final class PurchaseReviewScreenshotTests: XCTestCase {
             attachment.lifetime = .keepAlways
             add(attachment)
         }
-        try "Rendered the actual PlusMembershipView with StoreKit test products. USA storefront: $0.99 monthly, $10.00 yearly, and $0.99 each permanent background. No production purchases were made.\n".write(to: directory.appendingPathComponent("README.txt"), atomically: true, encoding: .utf8)
+        try "Rendered the actual PlusMembershipView with StoreKit test products. USA storefront: $0.99 monthly, $10 yearly, and $0.99 each permanent background. No production purchases were made.\n".write(to: directory.appendingPathComponent("README.txt"), atomically: true, encoding: .utf8)
     }
 }

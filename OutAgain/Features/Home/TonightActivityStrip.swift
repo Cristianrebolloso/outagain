@@ -37,7 +37,7 @@ struct TonightActivityStrip: View {
             .padding(.horizontal, AppLayout.screenPadding)
 
             if entries.isEmpty && store.nightGroups.isEmpty {
-                Text("No posts tonight yet.")
+                Text("No posts tonight yet 😳")
                     .font(AppTypography.rowSubtitle)
                     .foregroundStyle(AppTheme.softText)
                     .padding(.horizontal, AppLayout.screenPadding)

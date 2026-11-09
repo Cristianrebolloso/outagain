@@ -45,7 +45,7 @@ The installed Google Mobile Ads 13.12.0 manifest and Google's disclosure guide i
 
 Confirm the final App Store answers against the archived app's combined privacy report and actual settings. Google declares SDK capabilities in its own bundled manifest; the app manifest does not erase those declarations. Avoid claiming that non-personalized ads collect no data.
 
-Production configuration rejects sample IDs, missing IDs, malformed IDs, mismatched publisher IDs, and test mode in Release. A failed ad request does not block posts. The cache preloads the next placement, retains up to four creatives unless additional cards are currently visible, and reloads recycled/expired creatives when they are needed. Existing row height is retained during recycling so an offscreen cache eviction does not collapse the feed.
+Production configuration rejects sample IDs, missing IDs, malformed IDs, mismatched publisher IDs, and test mode in Release. A failed ad request does not block posts. The cache preloads the next placement, retains up to four creatives unless additional cards are currently visible, and reloads recycled/expired creatives when they are needed. Live ads and fallback promos share a regular-post-sized footprint, so recycling does not retain a stale tall creative height.
 
 ## Verification
 
@@ -85,3 +85,7 @@ Build 7 was uploaded and submitted at 1:50 AM America/Chicago. App Store Connect
 The development-signed Release build 7 installed successfully on Cristian’s connected iPhone Duo (bundle `com.cristian.OutAgain`). The device disconnected again before launch/readback or visual inspection, so installation success is not runtime visual QA. Archive and device builds, geometry checks, and diff validation passed. GitHub implementation commit: `865613c`.
 
 The remote `feed_ads_enabled` setting was read back as **true** during this pass; it was left unchanged. Reviewer notes disclose that ads are currently enabled, the admin switch behavior, fallback cards, SDK privacy settings, and the build 7 layout changes.
+
+## Build 12 card sizing
+
+Sponsored cards target the same height as a new 4:5 post plus its normal action footer (card width / 0.8 + 66 points). The required header, title, call to action and AdChoices footer are measured first; the media receives the remaining height. Portrait, square and landscape creatives fit without stretching or cropping inside that area. Optional body copy is omitted to keep the card compact. Accessibility text may increase the minimum height rather than clipping text or shrinking the SDK video surface below 120 x 120 points. Provider-supplied black bars remain part of the source media.

@@ -4,13 +4,14 @@ import Foundation
 struct FeedAdChecks {
     static func main() {
         for width: CGFloat in [240, 320, 390, 600] {
-            for ratio: CGFloat in [9.0 / 16.0, 4.0 / 5.0, 1, 4.0 / 3.0, 16.0 / 9.0, 2.4] {
-                let height = FeedAdMediaLayout.height(width: width, aspectRatio: ratio)
-                precondition(abs(width / height - ratio) < 0.0001, "Media frame must fit without gutters or cropping")
+            let mediaHeight = FeedAdMediaLayout.mediaHeight(cardWidth: width, chromeHeight: 190)
+            for ratio: CGFloat in [0.1, 9.0 / 16.0, 4.0 / 5.0, 1, 4.0 / 3.0, 16.0 / 9.0, 2.4, 10] {
+                let size = FeedAdMediaLayout.fittedMediaSize(in: CGSize(width: width - 32, height: mediaHeight), aspectRatio: ratio)
+                precondition(size.width >= 120 && size.height >= 120, "SDK media surface minimum")
+                precondition(size.width <= width - 32 && size.height <= mediaHeight, "Media must stay inside post-sized card")
             }
         }
-        precondition(FeedAdMediaLayout.height(width: 360, aspectRatio: 9.0 / 16.0) == 640,
-                     "Portrait ads must not be capped at the old square height")
+        precondition(FeedAdMediaLayout.cardHeight(width: 360) == 516, "Standard post height must not depend on creative ratio")
         for invalid: CGFloat in [0, -1, .nan, .infinity] {
             precondition(FeedAdMediaLayout.aspectRatio(reported: invalid, imageSize: CGSize(width: 900, height: 1600)) == 9.0 / 16.0)
             precondition(FeedAdMediaLayout.aspectRatio(reported: invalid, imageSize: CGSize(width: 0, height: 0)) == 1.5)

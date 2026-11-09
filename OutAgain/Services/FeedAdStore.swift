@@ -7,7 +7,6 @@ import UserMessagingPlatform
 final class FeedAdSlot {
     let id: UUID
     var ad: NativeAd?
-    var measuredHeight: CGFloat = 0
     var isVisible = false
     var lastUsed = Date()
     var loadedAt: Date?
@@ -135,7 +134,7 @@ final class FeedAdStore {
         isPrivacyOptionsRequired = ConsentInformation.shared.privacyOptionsRequirementStatus == .required
         canRequestAds = ConsentInformation.shared.canRequestAds
         if !canRequestAds {
-            for slot in slots.values { slot.ad = nil; slot.measuredHeight = 0 }
+            for slot in slots.values { slot.ad = nil }
         }
         guard feedEnabled, !Task.isCancelled, canRequestAds, !sdkReady else { return }
         // This integration does not request ATT or access an advertising ID.
@@ -174,7 +173,6 @@ final class FeedAdStore {
                 #endif
             case .failure:
                 slot.failedAt = .now
-                slot.measuredHeight = 0
             }
             self.trimCache()
         }

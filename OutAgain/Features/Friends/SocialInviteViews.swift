@@ -94,10 +94,6 @@ struct ShareSocialInviteView: View {
                                 .frame(maxWidth: .infinity, minHeight: 44)
                         }
                         .buttonStyle(.glass)
-                        Text("Expires \(invite.expiresAt.formatted(date: .abbreviated, time: groupID == nil ? .omitted : .shortened))")
-                            .font(AppTypography.footnote)
-                            .foregroundStyle(AppTheme.softText)
-                            .multilineTextAlignment(.center)
                     } else if isLoading {
                         ProgressView("Creating your invite…").padding(40)
                     } else if let errorMessage {

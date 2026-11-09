@@ -8,6 +8,7 @@ struct MomentPostCard: View {
     let post: MomentPost
     var isFocused = false
     var usesLiveStoreUpdates = true
+    var isPreview = false
     var onCommentTap: () -> Void = {}
     /// Called when the viewer taps the author avatar or name. The host
     /// decides how to present the friend profile — the home feed pushes
@@ -292,19 +293,21 @@ struct MomentPostCard: View {
 
             Spacer(minLength: 6)
 
-            Menu {
-                overflowMenu
-            } label: {
-                // Primary glass — surface chrome, not selection chrome.
-                Color.clear
-                    .frame(width: 44, height: 44)
-                    .overlay(
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: 16, weight: .bold))
-                            .foregroundStyle(.white)
-                    )
-                    .contentShape(Circle())
-                    .primaryGlass(in: .circle, interactive: true)
+            if !isPreview {
+                Menu {
+                    overflowMenu
+                } label: {
+                    // Primary glass — surface chrome, not selection chrome.
+                    Color.clear
+                        .frame(width: 44, height: 44)
+                        .overlay(
+                            Image(systemName: "ellipsis")
+                                .font(.system(size: 16, weight: .bold))
+                                .foregroundStyle(.white)
+                        )
+                        .contentShape(Circle())
+                        .primaryGlass(in: .circle, interactive: true)
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -501,7 +504,8 @@ struct MomentPostCard: View {
             // are cached on AppStore by rounded coordinate so a busy feed
             // (or scrolling past 30 cards) doesn't fire 30 redundant geocoder
             // round-trips — Apple throttles aggressive callers.
-            guard livePost.venue == nil,
+            guard !isPreview,
+                  livePost.venue == nil,
                   let coordinate = livePost.location?.coordinate
             else { return }
 
@@ -536,6 +540,7 @@ struct MomentPostCard: View {
                 }
             }
         }
+        .modifier(PostCardPreviewInteraction(isPreview: isPreview, post: livePost))
     }
 
     private var metadataSection: some View {
@@ -878,6 +883,28 @@ struct MomentPostCard: View {
         )
     }
 
+}
+
+/// Preserve the real card's appearance while replacing every interactive
+/// descendant with a single informational accessibility element in previews.
+private struct PostCardPreviewInteraction: ViewModifier {
+    let isPreview: Bool
+    let post: MomentPost
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isPreview {
+            content
+                .allowsHitTesting(false)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Post preview by \(post.author.displayName)")
+                .accessibilityValue([post.drink?.name, post.caption.isEmpty ? nil : post.caption]
+                    .compactMap { $0 }.joined(separator: ". "))
+                .accessibilityAddTraits(.isImage)
+        } else {
+            content
+        }
+    }
 }
 
 private struct PostActionLabel: View {

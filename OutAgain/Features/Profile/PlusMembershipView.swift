@@ -7,13 +7,17 @@ struct PlusMembershipView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @State private var isPreviewPresented = false
+    @State private var previewPost: MomentPost?
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 24) {
                     if let background {
-                        Button { isPreviewPresented = true } label: {
+                        Button {
+                            previewPost = BackgroundPreviewPostSelection.post(in: store)
+                            isPreviewPresented = true
+                        } label: {
                             AmbientBackground(overrideTheme: background)
                                 .frame(height: 180)
                                 .clipShape(RoundedRectangle(cornerRadius: 28))
@@ -89,7 +93,7 @@ struct PlusMembershipView: View {
         }
         .task { await store.purchases.loadProducts() }
         .fullScreenCover(isPresented: $isPreviewPresented) {
-            if let background { BackgroundPreviewView(theme: background) }
+            if let background { BackgroundPreviewView(theme: background, post: previewPost) }
         }
     }
 
@@ -110,7 +114,7 @@ struct PlusMembershipView: View {
                 HStack {
                     Text(period == "month" ? "Monthly" : "Yearly")
                     Spacer()
-                    Text("\(product.displayPrice) / \(period)")
+                    Text("\(MembershipPriceFormatting.displayPrice(for: product)) / \(period)")
                 }
                 .font(AppTypography.rowTitle).padding(.vertical, 10)
                 .frame(maxWidth: .infinity)
@@ -149,10 +153,38 @@ struct PlusMembershipView: View {
     }
 }
 
-private struct BackgroundPreviewView: View {
+enum MembershipPriceFormatting {
+    static func displayPrice(for product: Product) -> String {
+        var price = product.price
+        var wholePrice = Decimal()
+        NSDecimalRound(&wholePrice, &price, 0, .plain)
+        guard wholePrice == price else { return product.displayPrice }
+        return price.formatted(product.priceFormatStyle.precision(.fractionLength(0)))
+    }
+}
+
+enum BackgroundPreviewPostSelection {
+    @MainActor
+    static func post(in store: AppStore) -> MomentPost? {
+        // Profile hydration may cache posts that do not belong in this viewer's
+        // Home feed. Only authored posts can bypass the current feed scope.
+        guard store.viewer != nil else { return nil }
+        let authored = store.visiblePosts(store.viewerPosts)
+            .filter { !store.locallyDeletedPostIDs.contains($0.id) }
+        if let post = store.sortPostsByRecency(authored).first { return post }
+
+        let feed = store.visiblePosts(store.homeFeedPosts)
+            .filter { !store.locallyDeletedPostIDs.contains($0.id) }
+        return store.sortPostsByRecency(feed).first
+    }
+}
+
+struct BackgroundPreviewView: View {
     let theme: BackgroundTheme
+    let post: MomentPost?
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         ZStack {
@@ -164,16 +196,41 @@ private struct BackgroundPreviewView: View {
                     Button("Done", systemImage: "xmark") { dismiss() }
                         .labelStyle(.iconOnly).buttonStyle(.glass).controlSize(.large)
                 }
-                Spacer(minLength: 20)
-                previewCard
-                Spacer(minLength: 20)
+                GeometryReader { viewport in
+                    let availableHeight = max(0, viewport.size.height - 40)
+                    let allowsScaling = !dynamicTypeSize.isAccessibilitySize
+                    ScrollView {
+                        BackgroundPreviewCardFitLayout(availableHeight: availableHeight, allowsScaling: allowsScaling) {
+                            previewCard
+                                .visualEffect { content, geometry in
+                                    content.scaleEffect(allowsScaling && geometry.size.height > 0
+                                                        ? min(1, availableHeight / geometry.size.height) : 1)
+                                }
+                        }
+                            .padding(.vertical, 20)
+                            .frame(maxWidth: .infinity)
+                            .frame(minHeight: viewport.size.height)
+                    }
+                    .scrollIndicators(.hidden)
+                }
             }
             .padding(28).frame(maxWidth: 560)
         }
         .foregroundStyle(.white)
+        .environment(\.appBackgroundTheme, theme)
+        .environment(\.defaultBackgroundPhase, .default2)
     }
 
+    @ViewBuilder
     private var previewCard: some View {
+        if let post {
+            MomentPostCard(post: post, usesLiveStoreUpdates: false, isPreview: true)
+        } else {
+            tonightFallbackCard
+        }
+    }
+
+    private var tonightFallbackCard: some View {
         let drinks = store.viewerDrinkCounts
         let total = drinks.reduce(0) { $0 + $1.count }
         return NightPanel(cornerRadius: AppLayout.panelRadius, padding: 24) {
@@ -217,5 +274,28 @@ private struct BackgroundPreviewView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+}
+
+/// Measure the normal-width card once, then reserve its scaled height. Scaling
+/// only the read-only preview preserves the post's header and text wrapping.
+/// Accessibility sizes retain the full-size card and scroll when needed.
+private struct BackgroundPreviewCardFitLayout: Layout {
+    let availableHeight: CGFloat
+    let allowsScaling: Bool
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let card = subviews.first else { return .zero }
+        let maximumWidth = max(1, min(AppLayout.phoneColumnMaximumWidth, proposal.width ?? AppLayout.phoneColumnMaximumWidth))
+        let naturalSize = card.sizeThatFits(ProposedViewSize(width: maximumWidth, height: nil))
+        return CGSize(width: naturalSize.width,
+                      height: allowsScaling ? min(availableHeight, naturalSize.height) : naturalSize.height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let card = subviews.first else { return }
+        let naturalSize = card.sizeThatFits(ProposedViewSize(width: bounds.width, height: nil))
+        card.place(at: CGPoint(x: bounds.midX, y: bounds.midY), anchor: .center,
+                   proposal: ProposedViewSize(width: naturalSize.width, height: naturalSize.height))
     }
 }

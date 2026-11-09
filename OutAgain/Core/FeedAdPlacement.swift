@@ -33,11 +33,23 @@ enum FeedAdMediaLayout {
         return 1.5
     }
 
-    static func height(width: CGFloat, aspectRatio: CGFloat) -> CGFloat {
-        // Preserve the full creative. A fixed height cap introduces gutters
-        // for portrait media; aspect-fill instead would cut off ad copy.
-        width / self.aspectRatio(reported: aspectRatio, imageSize: nil)
+    /// Match a new 4:5 post plus its 44-point actions and 22-point footer padding.
+    static func cardHeight(width: CGFloat) -> CGFloat { max(0, width) / 0.8 + 66 }
+
+    static func mediaHeight(cardWidth: CGFloat, chromeHeight: CGFloat) -> CGFloat {
+        max(120, cardHeight(width: cardWidth) - 32 - chromeHeight)
     }
+
+    static func fittedMediaSize(in available: CGSize, aspectRatio: CGFloat) -> CGSize {
+        let ratio = self.aspectRatio(reported: aspectRatio, imageSize: nil)
+        let width = min(available.width, available.height * ratio)
+        // The SDK's video surface must be at least 120 points in both axes.
+        // Aspect-fit preserves the creative inside this surface, even for an
+        // unusually narrow asset or missing/incorrect provider metadata.
+        return CGSize(width: min(available.width, max(120, width)),
+                      height: min(available.height, max(120, width / ratio)))
+    }
+
 }
 
 struct FeedAdConfiguration {
